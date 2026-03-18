@@ -28,42 +28,78 @@ async function main() {
 
   // 2. 尝试多种 API 路径查找文档
 
-  // 方式A: v2.0 知识库 API（需要 operatorId）
+  // 方式A: 获取「我的文档」空间 + 知识库列表
   if (operatorId) {
     console.log(`--- 使用 operatorId: ${operatorId} ---\n`);
 
+    // A1: 获取「我的文档」知识库信息
+    console.log('--- 获取「我的文档」空间 ---\n');
+    try {
+      const res = await axios.get(`${BASE}/v2.0/wiki/mineWorkspaces`, {
+        headers,
+        params: { operatorId },
+      });
+      const ws = res.data.workspace;
+      if (ws) {
+        console.log(`✅ 我的文档空间:`);
+        console.log(`  workspaceId: ${ws.workspaceId}`);
+        console.log(`  rootNodeId: ${ws.rootNodeId}`);
+        console.log(`  name: ${ws.name}`);
+        console.log();
+
+        // 列出「我的文档」下的所有节点
+        const listNodes = async (parentNodeId, depth = 0) => {
+          try {
+            const nodesRes = await axios.get(`${BASE}/v2.0/wiki/nodes`, {
+              headers,
+              params: { parentNodeId, operatorId, maxResults: 50 },
+            });
+            const nodes = nodesRes.data.nodes || [];
+            for (const n of nodes) {
+              const indent = '  '.repeat(depth + 1);
+              const marker = (n.nodeId === docId) ? ' <<< 目标文档!' : '';
+              console.log(`${indent}- ${n.name} | nodeId: ${n.nodeId} | type: ${n.type} | docKey: ${n.docKey || 'N/A'}${marker}`);
+              if (n.nodeId === docId) {
+                console.log(`\n${indent}  >>> 找到! workspaceId: ${ws.workspaceId}, nodeId: ${n.nodeId}, docKey: ${n.docKey} <<<\n`);
+              }
+              // 递归查找子节点（只查2层）
+              if (n.type === 'FOLDER' && depth < 2) {
+                await listNodes(n.nodeId, depth + 1);
+              }
+            }
+          } catch (e) {
+            console.log(`${'  '.repeat(depth + 1)}节点查询失败:`, e.response?.data?.message || e.message);
+          }
+        };
+
+        console.log('我的文档内容:');
+        await listNodes(ws.rootNodeId);
+        console.log();
+      } else {
+        console.log('未找到「我的文档」空间');
+        console.log('原始响应:', JSON.stringify(res.data).slice(0, 500));
+      }
+    } catch (e) {
+      console.log('获取「我的文档」失败:', e.response?.data?.message || e.message);
+      console.log('  状态码:', e.response?.status);
+      if (e.response?.status === 403) {
+        console.log('  ⚠️  需要开通权限: Wiki.MySpace.Read');
+        console.log('  申请链接: https://open-dev.dingtalk.com/appscope/apply?content=ding9y4kro99uslcymmy%23Wiki.MySpace.Read');
+      }
+    }
+
+    // A2: 知识库列表
+    console.log('\n--- 知识库列表 ---\n');
     try {
       const res = await axios.get(`${BASE}/v2.0/wiki/workspaces`, {
         headers,
         params: { operatorId, maxResults: 50 },
       });
-      console.log('知识库列表:');
       const workspaces = res.data.workspaces || [];
       workspaces.forEach(ws => {
         console.log(`  - ${ws.name} | workspaceId: ${ws.workspaceId} | rootNodeId: ${ws.rootNodeId}`);
       });
       console.log();
-
-      // 遍历每个知识库查找目标文档
-      for (const ws of workspaces) {
-        try {
-          const nodesRes = await axios.get(`${BASE}/v2.0/wiki/nodes`, {
-            headers,
-            params: { parentNodeId: ws.rootNodeId, operatorId, maxResults: 50 },
-          });
-          const nodes = nodesRes.data.nodes || [];
-          console.log(`知识库 [${ws.name}] 的节点:`);
-          nodes.forEach(n => {
-            console.log(`  - ${n.name} | nodeId: ${n.nodeId} | type: ${n.type} | docKey: ${n.docKey || 'N/A'}`);
-            if (n.nodeId === docId || n.docKey === docId) {
-              console.log(`\n  >>> 找到目标文档! workspaceId: ${ws.workspaceId} <<<\n`);
-            }
-          });
-          console.log();
-        } catch (e) {
-          console.log(`  知识库 [${ws.name}] 节点查询失败:`, e.response?.data?.message || e.message);
-        }
-      }
     } catch (e) {
       console.log('知识库列表查询失败:', e.response?.data || e.message);
     }
