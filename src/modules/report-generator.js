@@ -8,6 +8,7 @@ const path = require('path');
 const Anthropic = require('@anthropic-ai/sdk');
 const config = require('../config');
 const logger = require('../utils/logger');
+const ossUploader = require('./oss-uploader');
 
 class ReportGenerator {
   constructor() {
@@ -158,6 +159,32 @@ ${JSON.stringify(weekData, null, 2)}
     } catch (err) {
       logger.error(`周报生成失败: ${err.message}`);
       return '周报生成失败，请检查AI服务配置';
+    }
+  }
+
+  /**
+   * 生成报告并上传到 OSS，返回可分享链接
+   * @param {string} type - daily | weekly | alert
+   * @param {object} taskData - 任务数据
+   * @param {object} analysisResult - AI分析结果
+   * @returns {{ markdown: string, url: string }}
+   */
+  async generateAndUpload(type, taskData, analysisResult) {
+    let markdown;
+    if (type === 'weekly') {
+      const weekData = this.loadRecentSnapshots(7);
+      markdown = await this.generateWeeklyReport(weekData);
+    } else {
+      markdown = await this.generateDailyDashboard(taskData, analysisResult);
+    }
+
+    try {
+      const url = await ossUploader.uploadReport(markdown, type);
+      logger.info(`${type} 报告已上传，链接: ${url}`);
+      return { markdown, url };
+    } catch (err) {
+      logger.error(`报告上传 OSS 失败: ${err.message}`);
+      return { markdown, url: null };
     }
   }
 
