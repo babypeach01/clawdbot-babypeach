@@ -18,6 +18,7 @@ const taskParser = require('./modules/task-parser');
 const aiAnalyzer = require('./modules/ai-analyzer');
 const reminderEngine = require('./modules/reminder-engine');
 const reportGenerator = require('./modules/report-generator');
+const messageTemplates = require('./modules/message-templates');
 const dataStore = require('./modules/data-store');
 const logger = require('./utils/logger');
 
@@ -102,33 +103,108 @@ async function runFullCycle(mode = 'scheduled') {
 }
 
 /**
+ * 发送晨报（只看异常：逾期/阻塞/催办中）
+ */
+async function sendMorningBrief() {
+  logger.info('📧 发送晨报...');
+  const taskData = dataStore.loadLatestTasks();
+  if (!taskData || !taskData.departments) {
+    logger.warn('无任务数据，跳过晨报');
+    return;
+  }
+  const { title, text } = messageTemplates.generateMorningBrief(taskData);
+  await dingtalk.sendRobotMessage(title, text);
+}
+
+/**
+ * 发送部门看板（图表为主）
+ */
+async function sendDashboard() {
+  logger.info('📧 发送部门看板...');
+  const taskData = dataStore.loadLatestTasks();
+  if (!taskData || !taskData.departments) {
+    logger.warn('无任务数据，跳过看板');
+    return;
+  }
+  const previousData = dataStore.loadLatestTasks(); // TODO: load yesterday's snapshot for diff
+  const changes = taskParser.detectChanges(taskData, previousData);
+  const { title, text } = messageTemplates.generateDashboard(taskData, changes);
+  await dingtalk.sendRobotMessage(title, text);
+}
+
+/**
+ * 发送催办消息（仅逾期+阻塞，逐条独立发送）
+ */
+async function sendUrgentAlerts() {
+  logger.info('📧 发送催办消息...');
+  const taskData = dataStore.loadLatestTasks();
+  if (!taskData || !taskData.departments) return;
+
+  const alerts = messageTemplates.generateUrgentAlerts(taskData);
+  // 限制最多发5条，避免刷屏
+  for (const alert of alerts.slice(0, 5)) {
+    await dingtalk.sendRobotMessage(alert.title, alert.text);
+    // 间隔2秒避免频率限制
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  if (alerts.length > 0) {
+    logger.info(`已发送${Math.min(alerts.length, 5)}条催办（共${alerts.length}条）`);
+  }
+}
+
+/**
+ * 发送周回顾（周五替代晚报）
+ */
+async function sendWeeklyReview() {
+  logger.info('📧 发送周回顾...');
+  const taskData = dataStore.loadLatestTasks();
+  if (!taskData || !taskData.departments) return;
+
+  const weekData = reportGenerator.loadRecentSnapshots(5);
+  const { title, text } = messageTemplates.generateWeeklyReview(taskData, weekData);
+  await dingtalk.sendRobotMessage(title, text);
+}
+
+/**
  * 启动定时任务
  */
 function startScheduler() {
-  logger.info('=== 钉钉待办自动化催办系统启动 (v2) ===');
-  logger.info(`催办时间: ${config.reminder.times.join(', ')}`);
+  logger.info('=== 钉钉待办自动化催办系统启动 (v3) ===');
 
-  for (const time of config.reminder.times) {
-    const [hour, minute] = time.split(':');
-    const cronExpr = `${minute} ${hour} * * 1-5`;
+  // ┌─────────────────────────────────────────┐
+  // │  时间表（工作日 Mon-Fri）                  │
+  // │  10:00  晨报焦点（半屏，只看异常）           │
+  // │  14:00  催办提醒（逾期+阻塞，逐条发）        │
+  // │  18:00  部门看板（一屏图表）                 │
+  // │  周五16:00  周回顾（替代当日晚报）           │
+  // └─────────────────────────────────────────┘
 
-    cron.schedule(cronExpr, () => {
-      logger.info(`定时催办触发: ${time}`);
-      runFullCycle('scheduled');
-    });
+  // 晨报 10:00
+  cron.schedule('0 10 * * 1-5', () => {
+    logger.info('⏰ 定时触发: 晨报');
+    sendMorningBrief().catch(e => logger.error(`晨报失败: ${e.message}`));
+  });
+  logger.info('已注册: 每工作日 10:00 晨报');
 
-    logger.info(`已注册定时任务: 每工作日 ${time}`);
-  }
+  // 催办 14:00
+  cron.schedule('0 14 * * 1-5', () => {
+    logger.info('⏰ 定时触发: 催办');
+    sendUrgentAlerts().catch(e => logger.error(`催办失败: ${e.message}`));
+  });
+  logger.info('已注册: 每工作日 14:00 催办');
 
-  // 每周五下午4点生成周报
-  cron.schedule('0 16 * * 5', async () => {
-    logger.info('触发周报生成...');
-    const weekData = reportGenerator.loadRecentSnapshots(5);
-    if (weekData.length > 0) {
-      const weeklyReport = await reportGenerator.generateWeeklyReport(weekData);
-      await dingtalk.sendRobotMessage('本周工作进度周报', weeklyReport);
+  // 晚间看板 18:00
+  cron.schedule('0 18 * * 1-5', () => {
+    const isFriday = dayjs().day() === 5;
+    if (isFriday) {
+      logger.info('⏰ 周五触发: 周回顾');
+      sendWeeklyReview().catch(e => logger.error(`周回顾失败: ${e.message}`));
+    } else {
+      logger.info('⏰ 定时触发: 部门看板');
+      sendDashboard().catch(e => logger.error(`看板失败: ${e.message}`));
     }
   });
+  logger.info('已注册: 每工作日 18:00 看板/周五周回顾');
 
   logger.info('所有定时任务已注册，系统运行中...');
 }
