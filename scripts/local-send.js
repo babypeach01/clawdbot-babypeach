@@ -3,12 +3,13 @@
  * 本地快捷发送工具（v3 - 支持5种消息模板）
  *
  * 用法：
- *   node scripts/local-send.js                    # 发送全部消息（晨报+看板+催办）
- *   node scripts/local-send.js --morning          # 只发晨报焦点
- *   node scripts/local-send.js --dashboard        # 只发部门看板（图表 ActionCard）
- *   node scripts/local-send.js --detail           # 只发事项明细表（可滚动长列表）
- *   node scripts/local-send.js --urgent           # 只发催办提醒（逐条）
- *   node scripts/local-send.js --weekly           # 只发周回顾
+ *   node scripts/local-send.js --preview-all      # ⭐ 一次发全部5种消息到群，方便对比样式
+ *   node scripts/local-send.js                    # 发送日常消息（晨报+看板+明细+催办）
+ *   node scripts/local-send.js --morning          # 只发 [1/5] 晨报焦点
+ *   node scripts/local-send.js --dashboard        # 只发 [2/5] 部门看板 ActionCard
+ *   node scripts/local-send.js --detail           # 只发 [3/5] 事项明细表
+ *   node scripts/local-send.js --urgent           # 只发 [4/5] 催办提醒（逐条）
+ *   node scripts/local-send.js --weekly           # 只发 [5/5] 周五回顾
  *   node scripts/local-send.js --test             # 发送测试消息（验证连通性）
  *   node scripts/local-send.js --dry-run          # 预览所有消息，不实际发送
  *   node scripts/local-send.js --file 文件路径     # 指定文档文件后发送
@@ -311,6 +312,60 @@ async function sendWeeklyReview(taskData, dryRun) {
   return true;
 }
 
+/**
+ * 为 --preview-all 构建看板 ActionCard（带 [2/5] 标注）
+ */
+async function _buildDashboardForPreview(taskData, dryRun) {
+  const dayjs = require('dayjs');
+  const today = dayjs();
+  const { summary } = taskData;
+  const totalPending = summary.totalTasks - summary.completedTasks;
+
+  // 生成看板HTML → 上传OSS
+  let dashboardUrl = '';
+  const html = dashboardHtml.generate(taskData);
+  try {
+    const date = dayjs().format('YYYY-MM-DD');
+    const time = dayjs().format('HHmmss');
+    const objectKey = `dashboard/${date}/preview-${time}.html`;
+    dashboardUrl = await ossUploader.uploadFile(objectKey, Buffer.from(html, 'utf8'), 'text/html; charset=utf-8');
+    console.log(`  看板页面已上传: ${dashboardUrl}`);
+  } catch (e) {
+    console.log(`  看板页面上传失败: ${e.message}`);
+  }
+  // 保存本地副本
+  const dataDir = path.join(__dirname, '..', 'data');
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'dashboard.html'), html);
+
+  // 生成图表
+  let chartUrls = {};
+  try {
+    chartUrls = await chartGenerator.generateAll(taskData);
+    console.log('  图表已生成');
+  } catch (e) {
+    console.log(`  图表生成失败: ${e.message}`);
+  }
+
+  // 构建 ActionCard
+  const dashboard = messageTemplates.generateDashboard(taskData, chartUrls);
+  const cardText = `## 📊 样式预览 [2/5] 部门看板 ActionCard\n\n> 触发时间：每工作日 18:00\n> 作用：全局概览+部门排行+异常明细\n> 底部按钮 → 打开交互式看板（5个G2Plot图表）\n\n---\n\n${dashboard.text}`;
+
+  if (!dryRun) {
+    if (dashboardUrl) {
+      return sendDingTalk('[2/5] 部门看板', cardText, 'actionCard', {
+        btnTitle: '📊 查看交互式看板（5个图表）',
+        btnUrl: dashboardUrl,
+      });
+    } else {
+      return sendDingTalk('[2/5] 部门看板', cardText);
+    }
+  } else {
+    console.log(cardText.slice(0, 500));
+    return true;
+  }
+}
+
 // ========== 主逻辑 ==========
 
 async function main() {
@@ -325,11 +380,12 @@ async function main() {
   const sendDetail = args.includes('--detail');
   const sendUrg = args.includes('--urgent');
   const sendWeek = args.includes('--weekly');
-  const sendAll = !sendMorning && !sendDash && !sendDetail && !sendUrg && !sendWeek;
+  const previewAll = args.includes('--preview-all');
+  const sendAll = !sendMorning && !sendDash && !sendDetail && !sendUrg && !sendWeek && !previewAll;
 
   console.log('========================================');
-  console.log('  ClawdBot 催办发送工具 v2');
-  console.log('  4种消息模板 · 图表+分条发送');
+  console.log('  ClawdBot 催办发送工具 v3');
+  console.log('  5种消息模板 · 全量样式预览');
   console.log('========================================');
 
   if (dryRun) {
@@ -385,7 +441,69 @@ async function main() {
   console.log(`  待完成: ${summary.totalTasks - summary.completedTasks} | 已完成: ${summary.completedTasks}`);
   console.log(`  推进中: ${summary.inProgressTasks} | 催办中: ${summary.pendingResponseTasks} | 阻塞: ${summary.blockedTasks}`);
 
-  // 按选择发送消息
+  // ========== --preview-all：一次发全部5种，每条带编号标注 ==========
+  if (previewAll) {
+    console.log('\n🎯 样式预览模式：将依次发送全部5种消息到钉钉群\n');
+    console.log('  [1/5] 晨报焦点 ─ 每天10:00自动发');
+    console.log('  [2/5] 部门看板 ─ 每天18:00自动发（ActionCard+交互式看板）');
+    console.log('  [3/5] 事项明细表 ─ 原生可滚动长列表');
+    console.log('  [4/5] 单项催办 ─ 每天14:00逐条发（仅发1条示例）');
+    console.log('  [5/5] 周五回顾 ─ 每周五18:00替代看板\n');
+
+    let ok = 0;
+
+    // [1/5] 晨报焦点
+    console.log('━'.repeat(50));
+    console.log('📧 发送 [1/5] 晨报焦点...');
+    const morning = messageTemplates.generateMorningBrief(taskData);
+    const morningText = `## 📧 样式预览 [1/5] 晨报焦点\n\n> 触发时间：每工作日 10:00\n> 作用：半屏异常速览（逾期/阻塞/催办）\n\n---\n\n${morning.text}`;
+    if (!dryRun) { if (await sendDingTalk('[1/5] 晨报焦点', morningText)) ok++; await sleep(3000); }
+    else { console.log(morningText.slice(0, 400)); ok++; }
+
+    // [2/5] 部门看板 ActionCard
+    console.log('━'.repeat(50));
+    console.log('📊 发送 [2/5] 部门看板 ActionCard...');
+    const dashResult = await _buildDashboardForPreview(taskData, dryRun);
+    if (dashResult) ok++;
+    if (!dryRun) await sleep(3000);
+
+    // [3/5] 事项明细表
+    console.log('━'.repeat(50));
+    console.log('📋 发送 [3/5] 事项明细表...');
+    const detail = messageTemplates.generateDetailTable(taskData);
+    const detailText = `## 📋 样式预览 [3/5] 事项明细表\n\n> 触发时间：按需（--detail）或可加入日常\n> 作用：全量待办清单，钉钉内原生滚动\n\n---\n\n${detail.text}`;
+    if (!dryRun) { if (await sendDingTalk('[3/5] 事项明细表', detailText)) ok++; await sleep(3000); }
+    else { console.log(detailText.slice(0, 400)); ok++; }
+
+    // [4/5] 单项催办（只发1条示例）
+    console.log('━'.repeat(50));
+    console.log('🔔 发送 [4/5] 单项催办（示例1条）...');
+    const alerts = messageTemplates.generateUrgentAlerts(taskData);
+    if (alerts.length > 0) {
+      const sampleAlert = alerts[0];
+      const alertText = `## 🔔 样式预览 [4/5] 单项催办\n\n> 触发时间：每工作日 14:00（逐条发送，最多5条）\n> 作用：直接@负责人催办逾期/阻塞事项\n\n---\n\n${sampleAlert.text}`;
+      if (!dryRun) { if (await sendDingTalk('[4/5] 单项催办', alertText)) ok++; await sleep(3000); }
+      else { console.log(alertText.slice(0, 400)); ok++; }
+    } else {
+      console.log('  当前无催办事项');
+    }
+
+    // [5/5] 周五回顾
+    console.log('━'.repeat(50));
+    console.log('📅 发送 [5/5] 周五回顾...');
+    const weekly = messageTemplates.generateWeeklyReview(taskData, null, {});
+    const weeklyText = `## 📅 样式预览 [5/5] 周五回顾\n\n> 触发时间：每周五 18:00（替代当天部门看板）\n> 作用：本周成果/完成率排行/待推动事项\n\n---\n\n${weekly.text}`;
+    if (!dryRun) { if (await sendDingTalk('[5/5] 周五回顾', weeklyText)) ok++; }
+    else { console.log(weeklyText.slice(0, 400)); ok++; }
+
+    console.log('\n' + '━'.repeat(50));
+    console.log(`✅ 样式预览完成: ${ok}/5 条已发送`);
+    console.log('请打开钉钉群查看全部5种消息样式');
+    console.log('━'.repeat(50));
+    return;
+  }
+
+  // ========== 常规发送 ==========
   let successCount = 0;
   let totalCount = 0;
 
