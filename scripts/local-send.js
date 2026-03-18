@@ -158,22 +158,24 @@ async function sendDashboard(taskData, dryRun) {
   const { summary } = taskData;
   const totalPending = summary.totalTasks - summary.completedTasks;
 
-  // 1. 生成 ECharts HTML 看板页面 → 上传 OSS
+  // 1. 生成看板 HTML → 直接上传 OSS（不要用 uploadReport，避免二次包装）
   let dashboardUrl = '';
+  const html = dashboardHtml.generate(taskData);
   try {
-    const html = dashboardHtml.generate(taskData);
-    dashboardUrl = await ossUploader.uploadReport(html, 'dashboard');
+    const dayjs = require('dayjs');
+    const date = dayjs().format('YYYY-MM-DD');
+    const time = dayjs().format('HHmmss');
+    const objectKey = `dashboard/${date}/board-${time}.html`;
+    dashboardUrl = await ossUploader.uploadFile(objectKey, Buffer.from(html, 'utf8'), 'text/html; charset=utf-8');
     console.log(`  看板页面已上传: ${dashboardUrl}`);
   } catch (e) {
     console.log(`  看板页面上传失败: ${e.message}`);
-    // 降级：保存本地
-    const fs = require('fs');
-    const outDir = path.join(__dirname, '..', 'data');
-    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-    const html = dashboardHtml.generate(taskData);
-    fs.writeFileSync(path.join(outDir, 'dashboard.html'), html);
-    console.log('  已保存到本地: data/dashboard.html');
   }
+  // 始终保存本地副本
+  const dataDir = path.join(__dirname, '..', 'data');
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'dashboard.html'), html);
+  console.log('  本地副本: data/dashboard.html');
 
   // 2. 生成图表并上传（用于 ActionCard 封面）
   let chartUrls = {};
