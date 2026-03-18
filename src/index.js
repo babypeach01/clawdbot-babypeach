@@ -53,13 +53,25 @@ app.post('/api/trigger', async (req, res) => {
  */
 app.post('/api/analyze', async (req, res) => {
   try {
-    const { content } = req.body;
+    const { content, useAiExtract } = req.body;
     if (!content) {
       return res.status(400).json({ error: '请提供文档内容 (content字段)' });
     }
 
-    // 解析
-    const taskData = taskParser.parseDocContent(content);
+    // 解析：先用正则，效果不好则用AI
+    let taskData = taskParser.parseDocContent(content);
+
+    if (useAiExtract || taskData.summary.totalTasks === 0) {
+      logger.info('启用AI智能提取...');
+      const aiExtracted = await aiAnalyzer.extractTasksFromRawText(content);
+      if (aiExtracted && aiExtracted.summary.totalTasks > 0) {
+        taskData = aiExtracted;
+      }
+    }
+
+    // AI去重
+    const { duplicates } = await aiAnalyzer.deduplicateTasks(taskData);
+
     // AI分析
     const analysisResult = await aiAnalyzer.analyzeAll(taskData);
     // 生成看板
@@ -71,6 +83,7 @@ app.post('/api/analyze', async (req, res) => {
     res.json({
       success: true,
       taskData,
+      duplicates,
       analysisResult,
       dashboard,
     });
@@ -88,26 +101,44 @@ app.post('/api/analyze', async (req, res) => {
  */
 app.post('/api/process', async (req, res) => {
   try {
-    const { content } = req.body;
+    const { content, useAiExtract } = req.body;
     if (!content) {
       return res.status(400).json({ error: '请提供文档内容 (content字段)' });
     }
 
-    // 解析
-    const taskData = taskParser.parseDocContent(content);
+    // 解析：先正则，效果不好则AI兜底
+    let taskData = taskParser.parseDocContent(content);
+
+    if (useAiExtract || taskData.summary.totalTasks === 0) {
+      const aiExtracted = await aiAnalyzer.extractTasksFromRawText(content);
+      if (aiExtracted && aiExtracted.summary.totalTasks > 0) {
+        taskData = aiExtracted;
+      }
+    }
+
     const previousData = dataStore.loadLatestTasks();
     const changes = taskParser.detectChanges(taskData, previousData);
+
+    // AI去重
+    const { duplicates } = await aiAnalyzer.deduplicateTasks(taskData);
 
     // AI分析
     const analysisResult = await aiAnalyzer.analyzeAll(taskData);
 
     // 催办
     await reminderEngine.sendDailyReminders(analysisResult, taskData);
-    await reminderEngine.sendStaleUpdateAlerts(taskData);
 
     // 预警
     if (analysisResult.alertsForManager?.length > 0) {
       await reminderEngine.sendManagerAlert(analysisResult.alertsForManager);
+    }
+
+    // 去重报告
+    if (duplicates.length > 0) {
+      const dedupReport = reportGenerator.generateDeduplicationReport(duplicates);
+      if (dedupReport) {
+        await dingtalk.sendRobotMessage('重复任务检测', dedupReport);
+      }
     }
 
     // 报告
@@ -118,7 +149,7 @@ app.post('/api/process', async (req, res) => {
     dataStore.saveAnalysis(dayjs().format('YYYY-MM-DD'), analysisResult);
     reportGenerator.saveSnapshot(taskData, analysisResult);
 
-    res.json({ success: true, changes, analysisResult, dashboard });
+    res.json({ success: true, changes, duplicates, analysisResult, dashboard });
   } catch (err) {
     logger.error(`处理接口错误: ${err.message}`);
     res.status(500).json({ error: err.message });
