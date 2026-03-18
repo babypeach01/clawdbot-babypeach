@@ -1,6 +1,12 @@
 /**
- * 高端可视化看板页面生成器（v2 - AntV G2Plot 暗色大屏风格）
- * 生成精美交互式 HTML 页面，上传到 OSS 通过钉钉 ActionCard 打开
+ * 高端可视化看板页面生成器（v3 - AntV G2Plot 暗色大屏驾驶舱）
+ *
+ * 5个图表面板：
+ * 1. 部门任务分布（堆叠横向条形图）
+ * 2. 任务状态总览（环形图）
+ * 3. 部门完成率排行（进度条形图）
+ * 4. 逾期/阻塞事项时间线（散点图）
+ * 5. 异常事项明细表（可滚动表格）
  */
 const dayjs = require('dayjs');
 
@@ -12,19 +18,20 @@ class DashboardHtml {
     const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.day()];
     const totalPending = summary.totalTasks - summary.completedTasks;
 
-    // 部门数据
+    // ━━━ 部门数据 ━━━
     const deptSorted = [...departments]
       .filter(d => (d.pendingCount || 0) + (d.completedCount || 0) > 0)
       .sort((a, b) => (b.pendingCount || 0) - (a.pendingCount || 0));
 
-    const deptChartData = [];
+    // 堆叠条形图数据
+    const deptBarData = [];
     for (const d of deptSorted) {
       const name = this._short(d.department);
-      deptChartData.push({ dept: name, type: '待办', count: d.pendingCount || 0 });
-      deptChartData.push({ dept: name, type: '已完成', count: d.completedCount || 0 });
+      deptBarData.push({ dept: name, type: '待办', count: d.pendingCount || 0 });
+      deptBarData.push({ dept: name, type: '已完成', count: d.completedCount || 0 });
     }
 
-    // 状态数据
+    // 状态环形图数据
     const statusData = [
       { status: '推进中', count: summary.inProgressTasks || 0 },
       { status: '催办中', count: summary.pendingResponseTasks || 0 },
@@ -34,42 +41,52 @@ class DashboardHtml {
       { status: '已完成', count: summary.completedTasks || 0 },
     ].filter(d => d.count > 0);
 
-    // 个人负荷
-    const personMap = {};
-    for (const dept of departments) {
-      for (const task of dept.tasks || []) {
-        if (task.isCompleted) continue;
-        const owner = task.owner || dept.owner || '';
-        if (!owner) continue;
-        personMap[owner] = (personMap[owner] || 0) + 1;
-      }
-    }
-    const personData = Object.entries(personMap)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 12)
-      .map(([name, count]) => ({ name, count }));
+    // 部门完成率数据
+    const completionData = deptSorted.map(d => {
+      const total = (d.pendingCount || 0) + (d.completedCount || 0);
+      const rate = total > 0 ? Math.round(((d.completedCount || 0) / total) * 100) : 0;
+      return { dept: this._short(d.department), rate };
+    }).sort((a, b) => b.rate - a.rate);
 
-    // 异常事项
-    const alerts = [];
+    // 逾期/阻塞散点数据
+    const timelineData = [];
     for (const dept of departments) {
       for (const task of dept.tasks || []) {
         if (task.isCompleted) continue;
         if (task.statusKey === 'blocked') {
-          alerts.push({ dept: this._short(dept.department), title: (task.title || '').slice(0, 30), owner: task.owner || dept.owner || '', type: '阻塞', color: '#ff4d4f', level: 3 });
+          timelineData.push({ dept: this._short(dept.department), title: (task.title || '').slice(0, 18), type: '阻塞', days: 0, owner: task.owner || dept.owner || '' });
         }
         if (task.deadline && dayjs(task.deadline).isBefore(today, 'day')) {
           const days = today.diff(dayjs(task.deadline), 'day');
-          alerts.push({ dept: this._short(dept.department), title: (task.title || '').slice(0, 30), owner: task.owner || dept.owner || '', type: `逾期${days}天`, color: days > 5 ? '#ff4d4f' : '#fa8c16', level: days > 5 ? 3 : 2 });
-        }
-        if (task.statusKey === 'pending_response') {
-          alerts.push({ dept: this._short(dept.department), title: (task.title || '').slice(0, 30), owner: task.owner || dept.owner || '', type: '催办中', color: '#faad14', level: 1 });
+          timelineData.push({ dept: this._short(dept.department), title: (task.title || '').slice(0, 18), type: '逾期', days, owner: task.owner || dept.owner || '' });
         }
       }
     }
-    alerts.sort((a, b) => b.level - a.level);
+    timelineData.sort((a, b) => b.days - a.days);
 
-    const alertsHtml = alerts.slice(0, 10).map(a =>
-      `<div class="alert-row"><span class="tag" style="background:${a.color}">${a.type}</span><span class="dept">${a.dept}</span><span class="title">${a.title}</span><span class="owner">${a.owner}</span></div>`
+    // 异常事项表格数据
+    const alertRows = [];
+    for (const dept of departments) {
+      for (const task of dept.tasks || []) {
+        if (task.isCompleted) continue;
+        const owner = task.owner || dept.owner || '';
+        const deptName = this._short(dept.department);
+        if (task.statusKey === 'blocked') {
+          alertRows.push({ status: '🚫 阻塞', dept: deptName, title: (task.title || '').slice(0, 24), owner, deadline: task.deadline ? dayjs(task.deadline).format('M/D') : '—', level: 3 });
+        }
+        if (task.deadline && dayjs(task.deadline).isBefore(today, 'day')) {
+          const days = today.diff(dayjs(task.deadline), 'day');
+          alertRows.push({ status: `⏰ 逾期${days}天`, dept: deptName, title: (task.title || '').slice(0, 24), owner, deadline: dayjs(task.deadline).format('M/D'), level: days > 5 ? 3 : 2 });
+        }
+        if (task.statusKey === 'pending_response') {
+          alertRows.push({ status: '📞 催办中', dept: deptName, title: (task.title || '').slice(0, 24), owner, deadline: task.deadline ? dayjs(task.deadline).format('M/D') : '—', level: 1 });
+        }
+      }
+    }
+    alertRows.sort((a, b) => b.level - a.level);
+
+    const alertTableHtml = alertRows.slice(0, 20).map(a =>
+      `<tr><td class="td-status">${a.status}</td><td>${a.dept}</td><td class="td-title">${a.title}</td><td>${a.owner}</td><td>${a.deadline}</td></tr>`
     ).join('');
 
     return `<!DOCTYPE html>
@@ -77,54 +94,59 @@ class DashboardHtml {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>任务管理看板 · ${today.format('M/D')}</title>
+<title>AI 任务管理驾驶舱 · ${today.format('M/D')}</title>
 <script src="https://unpkg.com/@antv/g2plot@2/dist/g2plot.min.js"><\/script>
 <style>
-:root{--bg:#0a0e1a;--card:#111827;--border:rgba(255,255,255,0.06);--text:#e5e7eb;--sub:#6b7280;--accent:#3b82f6;--green:#10b981;--red:#ef4444;--orange:#f59e0b;--purple:#8b5cf6}
+:root{--bg:#0b0f1a;--card:#111827;--card2:#1a2332;--border:rgba(255,255,255,0.06);--text:#e5e7eb;--sub:#6b7280;--accent:#3b82f6;--green:#10b981;--red:#ef4444;--orange:#f59e0b;--purple:#8b5cf6}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,"PingFang SC","SF Pro Display","Helvetica Neue",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
 
-.topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)}
+/* ━━ 顶栏 ━━ */
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:linear-gradient(135deg,rgba(59,130,246,0.08),rgba(139,92,246,0.06));border-bottom:1px solid var(--border)}
 .topbar .logo{display:flex;align-items:center;gap:10px}
-.topbar .logo .dot{width:10px;height:10px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
-.topbar .logo h1{font-size:17px;font-weight:600;letter-spacing:0.5px}
-.topbar .time{font-size:13px;color:var(--sub)}
+.topbar .logo .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+.topbar .logo h1{font-size:16px;font-weight:600;letter-spacing:0.5px;background:linear-gradient(90deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.topbar .time{font-size:12px;color:var(--sub)}
 
-.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:16px 20px}
-.kpi{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px 16px;position:relative;overflow:hidden}
-.kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:14px 14px 0 0}
-.kpi.blue::before{background:linear-gradient(90deg,#3b82f6,#60a5fa)}
-.kpi.green::before{background:linear-gradient(90deg,#10b981,#34d399)}
-.kpi.red::before{background:linear-gradient(90deg,#ef4444,#f87171)}
-.kpi.orange::before{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
-.kpi .value{font-size:36px;font-weight:700;letter-spacing:-1px;line-height:1}
-.kpi.blue .value{color:#60a5fa}
-.kpi.green .value{color:#34d399}
-.kpi.red .value{color:#f87171}
-.kpi.orange .value{color:#fbbf24}
-.kpi .label{font-size:12px;color:var(--sub);margin-top:6px;text-transform:uppercase;letter-spacing:1px}
+/* ━━ KPI 指标卡 ━━ */
+.kpi-row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;padding:14px 24px}
+.kpi{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;position:relative;overflow:hidden;text-align:center}
+.kpi::after{content:'';position:absolute;top:0;left:0;right:0;height:2px}
+.kpi.c1::after{background:linear-gradient(90deg,#3b82f6,#60a5fa)}
+.kpi.c2::after{background:linear-gradient(90deg,#10b981,#34d399)}
+.kpi.c3::after{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+.kpi.c4::after{background:linear-gradient(90deg,#ef4444,#f87171)}
+.kpi.c5::after{background:linear-gradient(90deg,#8b5cf6,#a78bfa)}
+.kpi .v{font-size:32px;font-weight:700;line-height:1.1}
+.kpi.c1 .v{color:#60a5fa}.kpi.c2 .v{color:#34d399}.kpi.c3 .v{color:#fbbf24}.kpi.c4 .v{color:#f87171}.kpi.c5 .v{color:#a78bfa}
+.kpi .l{font-size:11px;color:var(--sub);margin-top:4px;letter-spacing:0.5px}
 
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 20px 16px}
-.panel{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;min-height:320px}
+/* ━━ 图表面板 ━━ */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 24px 10px}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;min-height:300px}
 .panel.wide{grid-column:1/-1}
-.panel-title{font-size:14px;font-weight:600;color:var(--sub);margin-bottom:12px;display:flex;align-items:center;gap:6px}
-.panel-title::before{content:'';width:3px;height:14px;border-radius:2px;background:var(--accent)}
-.chart-box{width:100%;height:280px}
+.panel-head{font-size:13px;font-weight:600;color:var(--sub);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.panel-head::before{content:'';width:3px;height:12px;border-radius:2px;background:var(--accent)}
+.chart-box{width:100%;height:260px}
 
-.alert-section{padding:0 20px 16px}
-.alert-panel{background:var(--card);border:1px solid rgba(239,68,68,0.2);border-radius:14px;padding:16px}
-.alert-panel h3{font-size:14px;color:#f87171;margin-bottom:10px;display:flex;align-items:center;gap:6px}
-.alert-row{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px}
-.alert-row:last-child{border:none}
-.tag{padding:2px 8px;border-radius:4px;color:#fff;font-size:11px;font-weight:600;white-space:nowrap}
-.dept{color:var(--sub);min-width:50px;font-size:12px}
-.title{flex:1;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.owner{color:var(--accent);white-space:nowrap;font-size:12px}
+/* ━━ 异常表格 ━━ */
+.table-wrap{max-height:360px;overflow-y:auto;border-radius:8px;border:1px solid var(--border)}
+.table-wrap::-webkit-scrollbar{width:4px}
+.table-wrap::-webkit-scrollbar-thumb{background:#374151;border-radius:2px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead{position:sticky;top:0;z-index:1}
+th{background:#1e293b;color:#9ca3af;font-weight:500;padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:12px}
+td{padding:7px 10px;border-bottom:1px solid var(--border);color:var(--text)}
+tr:hover td{background:rgba(59,130,246,0.06)}
+.td-status{white-space:nowrap;font-weight:600;font-size:12px}
+.td-title{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-.footer{text-align:center;padding:20px;color:#374151;font-size:12px}
-.footer .badge{display:inline-flex;align-items:center;gap:4px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);padding:4px 14px;border-radius:20px;color:#fff;font-size:11px;font-weight:500;margin-bottom:6px}
+/* ━━ 底栏 ━━ */
+.footer{text-align:center;padding:16px;color:#374151;font-size:11px}
+.footer .badge{display:inline-flex;align-items:center;gap:4px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);padding:3px 12px;border-radius:16px;color:#fff;font-size:10px;font-weight:500;margin-bottom:4px}
 
-@media(max-width:640px){.kpi-row{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.kpi .value{font-size:28px}}
+@media(max-width:640px){.kpi-row{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.kpi .v{font-size:24px}}
 </style>
 </head>
 <body>
@@ -135,98 +157,123 @@ body{font-family:-apple-system,"PingFang SC","SF Pro Display","Helvetica Neue",s
 </div>
 
 <div class="kpi-row">
-  <div class="kpi blue"><div class="value">${totalPending}</div><div class="label">待办事项</div></div>
-  <div class="kpi green"><div class="value">${summary.completedTasks}</div><div class="label">已完成</div></div>
-  <div class="kpi red"><div class="value">${summary.blockedTasks}</div><div class="label">阻塞</div></div>
-  <div class="kpi orange"><div class="value">${summary.pendingResponseTasks || 0}</div><div class="label">催办中</div></div>
+  <div class="kpi c1"><div class="v">${summary.totalTasks}</div><div class="l">总事项</div></div>
+  <div class="kpi c3"><div class="v">${totalPending}</div><div class="l">待办中</div></div>
+  <div class="kpi c2"><div class="v">${summary.completedTasks}</div><div class="l">已完成</div></div>
+  <div class="kpi c4"><div class="v">${summary.blockedTasks}</div><div class="l">阻塞</div></div>
+  <div class="kpi c5"><div class="v">${summary.pendingResponseTasks || 0}</div><div class="l">催办中</div></div>
 </div>
 
 <div class="grid">
+  <!-- 部门任务分布（堆叠条形图）-->
   <div class="panel wide">
-    <div class="panel-title">部门任务分布</div>
+    <div class="panel-head">部门任务分布</div>
     <div id="deptChart" class="chart-box"></div>
   </div>
+
+  <!-- 任务状态总览（环形图）-->
   <div class="panel">
-    <div class="panel-title">任务状态</div>
+    <div class="panel-head">任务状态总览</div>
     <div id="statusChart" class="chart-box"></div>
   </div>
+
+  <!-- 部门完成率（条形图）-->
   <div class="panel">
-    <div class="panel-title">个人负荷 TOP</div>
-    <div id="personChart" class="chart-box"></div>
+    <div class="panel-head">部门完成率排行</div>
+    <div id="completionChart" class="chart-box"></div>
   </div>
+
+  <!-- 逾期/阻塞散点图 -->
+  ${timelineData.length > 0 ? `
+  <div class="panel wide">
+    <div class="panel-head">逾期 & 阻塞事项分布</div>
+    <div id="timelineChart" class="chart-box"></div>
+  </div>` : ''}
+
+  <!-- 异常事项明细表 -->
+  ${alertRows.length > 0 ? `
+  <div class="panel wide">
+    <div class="panel-head">异常事项明细 (${alertRows.length})</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>状态</th><th>部门</th><th>事项</th><th>负责人</th><th>截止日</th></tr></thead>
+        <tbody>${alertTableHtml}</tbody>
+      </table>
+    </div>
+  </div>` : ''}
 </div>
 
-${alerts.length > 0 ? `
-<div class="alert-section">
-  <div class="alert-panel">
-    <h3>⚠ 异常事项 (${alerts.length})</h3>
-    ${alertsHtml}
-  </div>
-</div>` : ''}
-
 <div class="footer">
-  <div class="badge">🤖 AI Powered</div>
+  <div class="badge">AI Powered</div>
   <div>AI 智能任务跟踪系统自动生成 · ${today.format('YYYY-MM-DD HH:mm')}</div>
 </div>
 
 <script>
-var deptData = ${JSON.stringify(deptChartData)};
-var statusData = ${JSON.stringify(statusData)};
-var personData = ${JSON.stringify(personData)};
+var G2 = G2Plot;
+var tooltipStyle = {domStyles:{'g2-tooltip':{background:'#1f2937',border:'1px solid #374151',borderRadius:'8px',color:'#e5e7eb',boxShadow:'0 4px 20px rgba(0,0,0,0.4)',fontSize:'12px'}}};
 
-// 部门任务堆叠条形图
-new G2Plot.Bar('deptChart', {
-  data: deptData,
+// ━━━ 1. 部门任务堆叠条形图 ━━━
+new G2.Bar('deptChart', Object.assign({
+  data: ${JSON.stringify(deptBarData)},
   isStack: true,
-  xField: 'count',
-  yField: 'dept',
-  seriesField: 'type',
-  color: ['#f87171', '#34d399'],
+  xField: 'count', yField: 'dept', seriesField: 'type',
+  color: ['#f87171','#34d399'],
   barWidthRatio: 0.5,
-  label: { position: 'middle', style: { fill: '#fff', fontSize: 12, fontWeight: 600 } },
-  legend: { position: 'top-right', itemName: { style: { fill: '#9ca3af', fontSize: 12 } } },
-  xAxis: { grid: { line: { style: { stroke: 'rgba(255,255,255,0.04)' } } }, label: { style: { fill: '#6b7280' } } },
-  yAxis: { label: { style: { fill: '#d1d5db', fontSize: 13 } } },
-  theme: { background: 'transparent' },
-  barStyle: { radius: [0, 4, 4, 0] },
-  tooltip: { domStyles: { 'g2-tooltip': { background: '#1f2937', border: '1px solid #374151', borderRadius: '8px', color: '#e5e7eb', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' } } },
-}).render();
+  label: {position:'middle',style:{fill:'#fff',fontSize:11,fontWeight:600}},
+  legend: {position:'top-right',itemName:{style:{fill:'#9ca3af',fontSize:12}}},
+  xAxis: {grid:{line:{style:{stroke:'rgba(255,255,255,0.04)'}}},label:{style:{fill:'#6b7280'}}},
+  yAxis: {label:{style:{fill:'#d1d5db',fontSize:13}}},
+  theme: {background:'transparent'},
+  barStyle: {radius:[0,4,4,0]},
+}, tooltipStyle)).render();
 
-// 状态环形图
-new G2Plot.Pie('statusChart', {
-  data: statusData,
-  angleField: 'count',
-  colorField: 'status',
-  radius: 0.85,
-  innerRadius: 0.6,
-  color: ['#60a5fa', '#fbbf24', '#f87171', '#a78bfa', '#6b7280', '#34d399'],
-  label: { type: 'inner', content: '{value}', style: { fill: '#fff', fontSize: 13, fontWeight: 600 }, offset: '-25%' },
-  legend: { position: 'right', itemName: { style: { fill: '#9ca3af', fontSize: 12 } }, itemSpacing: 8 },
+// ━━━ 2. 状态环形图 ━━━
+new G2.Pie('statusChart', Object.assign({
+  data: ${JSON.stringify(statusData)},
+  angleField: 'count', colorField: 'status',
+  radius: 0.85, innerRadius: 0.6,
+  color: ['#60a5fa','#fbbf24','#f87171','#a78bfa','#6b7280','#34d399'],
+  label: {type:'inner',content:'{value}',style:{fill:'#fff',fontSize:12,fontWeight:600},offset:'-25%'},
+  legend: {position:'right',itemName:{style:{fill:'#9ca3af',fontSize:12}},itemSpacing:8},
   statistic: {
-    title: { content: '总计', style: { color: '#6b7280', fontSize: '13px' } },
-    content: { content: '${summary.totalTasks}', style: { color: '#e5e7eb', fontSize: '28px', fontWeight: 700 } },
+    title:{content:'总计',style:{color:'#6b7280',fontSize:'12px'}},
+    content:{content:'${summary.totalTasks}',style:{color:'#e5e7eb',fontSize:'26px',fontWeight:700}},
   },
-  theme: { background: 'transparent' },
-  tooltip: { domStyles: { 'g2-tooltip': { background: '#1f2937', border: '1px solid #374151', borderRadius: '8px', color: '#e5e7eb', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' } } },
-  pieStyle: { stroke: '#111827', lineWidth: 3 },
-}).render();
+  theme: {background:'transparent'},
+  pieStyle: {stroke:'#111827',lineWidth:2},
+}, tooltipStyle)).render();
 
-// 个人负荷条形图
-new G2Plot.Bar('personChart', {
-  data: personData,
-  xField: 'count',
-  yField: 'name',
-  seriesField: 'name',
-  color: function(d) { var v = d.count || 0; return v > 30 ? '#f87171' : v > 20 ? '#fb923c' : v > 10 ? '#fbbf24' : '#60a5fa'; },
+// ━━━ 3. 部门完成率条形图 ━━━
+new G2.Bar('completionChart', Object.assign({
+  data: ${JSON.stringify(completionData)},
+  xField: 'rate', yField: 'dept',
+  color: function(d) { var v = d.rate||0; return v>=50?'#34d399':v>=20?'#fbbf24':'#f87171'; },
   barWidthRatio: 0.5,
   legend: false,
-  label: { position: 'right', style: { fill: '#9ca3af', fontSize: 12 } },
-  xAxis: { grid: { line: { style: { stroke: 'rgba(255,255,255,0.04)' } } }, label: { style: { fill: '#6b7280' } } },
-  yAxis: { label: { style: { fill: '#d1d5db', fontSize: 13 } } },
-  theme: { background: 'transparent' },
-  barStyle: { radius: [0, 4, 4, 0] },
-  tooltip: { domStyles: { 'g2-tooltip': { background: '#1f2937', border: '1px solid #374151', borderRadius: '8px', color: '#e5e7eb', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' } } },
-}).render();
+  label: {position:'right',content:function(d){return d.rate+'%'},style:{fill:'#9ca3af',fontSize:11}},
+  xAxis: {max:100,grid:{line:{style:{stroke:'rgba(255,255,255,0.04)'}}},label:{style:{fill:'#6b7280'},formatter:function(v){return v+'%'}}},
+  yAxis: {label:{style:{fill:'#d1d5db',fontSize:13}}},
+  theme: {background:'transparent'},
+  barStyle: {radius:[0,4,4,0]},
+}, tooltipStyle)).render();
+
+${timelineData.length > 0 ? `
+// ━━━ 4. 逾期/阻塞散点图 ━━━
+new G2.Scatter('timelineChart', Object.assign({
+  data: ${JSON.stringify(timelineData)},
+  xField: 'dept', yField: 'days',
+  colorField: 'type',
+  color: ['#f87171','#fbbf24'],
+  sizeField: 'days',
+  size: [6, 20],
+  shape: 'circle',
+  pointStyle: {fillOpacity:0.7,stroke:'transparent'},
+  xAxis: {label:{style:{fill:'#d1d5db',fontSize:12}}},
+  yAxis: {title:{text:'逾期天数',style:{fill:'#6b7280',fontSize:12}},label:{style:{fill:'#6b7280'}},grid:{line:{style:{stroke:'rgba(255,255,255,0.04)'}}}},
+  legend: {position:'top-right',itemName:{style:{fill:'#9ca3af',fontSize:12}}},
+  theme: {background:'transparent'},
+  tooltip: Object.assign({fields:['title','type','days','owner'],formatter:function(d){return{name:d.title,value:(d.type==='逾期'?d.days+'天':'阻塞')+' · '+d.owner}}}, tooltipStyle),
+}, tooltipStyle)).render();` : ''}
 <\/script>
 </body>
 </html>`;

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
- * 本地快捷发送工具（v2 - 支持4种消息模板）
+ * 本地快捷发送工具（v3 - 支持5种消息模板）
  *
  * 用法：
  *   node scripts/local-send.js                    # 发送全部消息（晨报+看板+催办）
  *   node scripts/local-send.js --morning          # 只发晨报焦点
- *   node scripts/local-send.js --dashboard        # 只发部门看板（图表）
+ *   node scripts/local-send.js --dashboard        # 只发部门看板（图表 ActionCard）
+ *   node scripts/local-send.js --detail           # 只发事项明细表（可滚动长列表）
  *   node scripts/local-send.js --urgent           # 只发催办提醒（逐条）
  *   node scripts/local-send.js --weekly           # 只发周回顾
  *   node scripts/local-send.js --test             # 发送测试消息（验证连通性）
@@ -234,6 +235,21 @@ async function sendDashboard(taskData, dryRun) {
 }
 
 /**
+ * 发送事项明细表（原生钉钉可滚动长列表）
+ */
+async function sendDetailTable(taskData, dryRun) {
+  console.log('\n📋 [2.5] 事项明细表（原生滚动）');
+  console.log('─'.repeat(40));
+  const { title, text } = messageTemplates.generateDetailTable(taskData);
+  console.log(text.slice(0, 500) + (text.length > 500 ? '\n...(省略)' : ''));
+  console.log('─'.repeat(40));
+  if (!dryRun) {
+    return sendDingTalk(title, text);
+  }
+  return true;
+}
+
+/**
  * 发送催办提醒（逐条独立发送，最多5条）
  */
 async function sendUrgentAlerts(taskData, dryRun) {
@@ -306,9 +322,10 @@ async function main() {
   // 消息类型选择
   const sendMorning = args.includes('--morning');
   const sendDash = args.includes('--dashboard');
+  const sendDetail = args.includes('--detail');
   const sendUrg = args.includes('--urgent');
   const sendWeek = args.includes('--weekly');
-  const sendAll = !sendMorning && !sendDash && !sendUrg && !sendWeek;
+  const sendAll = !sendMorning && !sendDash && !sendDetail && !sendUrg && !sendWeek;
 
   console.log('========================================');
   console.log('  ClawdBot 催办发送工具 v2');
@@ -381,6 +398,12 @@ async function main() {
   if (sendAll || sendDash) {
     totalCount++;
     if (await sendDashboard(taskData, dryRun)) successCount++;
+    if (!dryRun && sendAll) await sleep(2000);
+  }
+
+  if (sendAll || sendDetail) {
+    totalCount++;
+    if (await sendDetailTable(taskData, dryRun)) successCount++;
     if (!dryRun && sendAll) await sleep(2000);
   }
 
