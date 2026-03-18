@@ -13,7 +13,6 @@
   "keywords": ["dingtalk", "task-tracking", "ai", "automation"],
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
     "node-cron": "^3.0.3",
     "axios": "^1.7.0",
     "dayjs": "^1.11.13",

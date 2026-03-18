@@ -1,43 +1,155 @@
 /**
- * AI智能分析引擎（v2）
+ * AI智能分析引擎（v3 - 多引擎版）
  *
- * 新增能力：
- * 1. 从原始文档文本中智能提取任务（当正则解析不够准确时的兜底方案）
- * 2. 去重和合并同类项（跨部门/同部门的重复任务识别）
- * 3. 风险评估、进度分析、智能催办话术生成
+ * 支持引擎：
+ * 1. Google Gemini（免费额度大，推荐主力）
+ * 2. Kimi/月之暗面（国内平台，延迟低）
+ *
+ * 自动降级：Gemini → Kimi → 规则引擎
  */
-const Anthropic = require('@anthropic-ai/sdk');
+const axios = require('axios');
 const config = require('../config');
 const logger = require('../utils/logger');
 
 class AIAnalyzer {
   constructor() {
-    this.aiEnabled = !!config.ai.apiKey;
-    if (this.aiEnabled) {
-      this.client = new Anthropic({ apiKey: config.ai.apiKey });
+    this._initProviders();
+  }
+
+  /**
+   * 初始化可用的AI引擎
+   */
+  _initProviders() {
+    this.providers = [];
+
+    const preferred = config.ai.provider || 'auto';
+
+    const geminiAvailable = !!config.ai.gemini.apiKey;
+    const kimiAvailable = !!config.ai.kimi.apiKey;
+
+    if (preferred === 'gemini' && geminiAvailable) {
+      this.providers = ['gemini'];
+    } else if (preferred === 'kimi' && kimiAvailable) {
+      this.providers = ['kimi'];
     } else {
-      logger.info('未配置 ANTHROPIC_API_KEY，AI分析已禁用，使用规则引擎替代');
-      this.client = null;
+      // auto 模式：按优先级排列可用的引擎
+      if (geminiAvailable) this.providers.push('gemini');
+      if (kimiAvailable) this.providers.push('kimi');
+    }
+
+    this.aiEnabled = this.providers.length > 0;
+
+    if (this.aiEnabled) {
+      logger.info(`AI引擎已启用: ${this.providers.join(' → ')}（自动降级链）`);
+    } else {
+      logger.info('未配置任何AI API Key，AI分析已禁用，使用规则引擎替代');
     }
   }
 
   /**
+   * 统一的AI调用方法，自动选择引擎并降级
+   */
+  async _callAI(systemPrompt, userMessage, maxTokens = 4096) {
+    for (const provider of this.providers) {
+      try {
+        const result = await this._callProvider(provider, systemPrompt, userMessage, maxTokens);
+        return result;
+      } catch (err) {
+        logger.warn(`${provider} 调用失败: ${err.message}，尝试下一个引擎...`);
+        continue;
+      }
+    }
+    return null; // 所有引擎都失败
+  }
+
+  /**
+   * 调用指定的AI引擎
+   */
+  async _callProvider(provider, systemPrompt, userMessage, maxTokens) {
+    if (provider === 'gemini') {
+      return this._callGemini(systemPrompt, userMessage, maxTokens);
+    } else if (provider === 'kimi') {
+      return this._callKimi(systemPrompt, userMessage, maxTokens);
+    }
+    throw new Error(`未知的AI引擎: ${provider}`);
+  }
+
+  /**
+   * 调用 Google Gemini API
+   */
+  async _callGemini(systemPrompt, userMessage, maxTokens) {
+    const { apiKey, model, baseUrl } = config.ai.gemini;
+    const url = `${baseUrl}/models/${model}:generateContent?key=${apiKey}`;
+
+    const response = await axios.post(url, {
+      systemInstruction: {
+        parts: [{ text: systemPrompt }],
+      },
+      contents: [{
+        parts: [{ text: userMessage }],
+      }],
+      generationConfig: {
+        maxOutputTokens: maxTokens,
+        temperature: 0.3,
+      },
+    }, {
+      timeout: 60000,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error('Gemini 返回内容为空');
+    return text;
+  }
+
+  /**
+   * 调用 Kimi/月之暗面 API（OpenAI 兼容格式）
+   */
+  async _callKimi(systemPrompt, userMessage, maxTokens) {
+    const { apiKey, model, baseUrl } = config.ai.kimi;
+
+    const response = await axios.post(`${baseUrl}/chat/completions`, {
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+      max_tokens: maxTokens,
+      temperature: 0.3,
+    }, {
+      timeout: 60000,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+    });
+
+    const text = response.data?.choices?.[0]?.message?.content;
+    if (!text) throw new Error('Kimi 返回内容为空');
+    return text;
+  }
+
+  /**
+   * 从AI返回文本中提取JSON
+   */
+  _extractJSON(text) {
+    const jsonMatch = text.match(/```json\n?([\s\S]*?)\n?```/) || text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[1] || jsonMatch[0]);
+    }
+    return null;
+  }
+
+  /**
    * AI智能提取任务（当正则解析效果不佳时使用）
-   * 直接把原始文档丢给AI，让AI理解并结构化
-   *
-   * @param {string} rawText - 原始文档文本
-   * @returns {Object} 结构化的任务数据（与 taskParser.parseDocContent 输出格式一致）
    */
   async extractTasksFromRawText(rawText) {
     if (!this.aiEnabled) {
       logger.info('AI未启用，跳过智能提取');
       return null;
     }
-    try {
-      const response = await this.client.messages.create({
-        model: config.ai.model,
-        max_tokens: 4096,
-        system: `你是一个任务提取专家。你的工作是从会议纪要或待办文档中提取结构化的任务信息。
+
+    const systemPrompt = `你是一个任务提取专家。你的工作是从会议纪要或待办文档中提取结构化的任务信息。
 
 文档通常按部门分类，每行是一条待办事项，格式不固定，可能包含：
 - 序号
@@ -52,10 +164,9 @@ class AIAnalyzer {
 
 标准状态枚举: completed(已完成), in_progress(推进中), pending_response(催办中), not_started(待启动), on_hold(暂缓), blocked(阻塞)
 
-你必须以JSON格式返回。`,
-        messages: [{
-          role: 'user',
-          content: `请从以下文档中提取所有部门的待办任务：
+你必须以JSON格式返回。`;
+
+    const userMessage = `请从以下文档中提取所有部门的待办任务：
 
 ${rawText}
 
@@ -80,17 +191,18 @@ ${rawText}
     }
   ]
 }
-\`\`\``,
-        }],
-      });
+\`\`\``;
 
-      const text = response.content[0].text;
-      const jsonMatch = text.match(/```json\n?([\s\S]*?)\n?```/) || text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const extracted = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+    try {
+      const text = await this._callAI(systemPrompt, userMessage);
+      if (!text) {
+        logger.warn('所有AI引擎都不可用，跳过智能提取');
+        return null;
+      }
+
+      const extracted = this._extractJSON(text);
+      if (extracted) {
         logger.info(`AI提取完成: ${extracted.departments?.length || 0}个部门`);
-
-        // 补充 summary 统计
         extracted.parsedAt = new Date().toISOString();
         extracted.summary = this._computeSummary(extracted.departments || []);
         return extracted;
@@ -106,13 +218,8 @@ ${rawText}
 
   /**
    * AI去重与合并同类项
-   * 识别不同表述但实质相同的任务，合并重复项
-   *
-   * @param {Object} taskData - 解析后的任务数据
-   * @returns {Object} 去重后的任务数据 + 合并报告
    */
   async deduplicateTasks(taskData) {
-    // 收集所有任务，附带部门信息
     const allTasks = [];
     for (const dept of taskData.departments) {
       for (const task of dept.tasks) {
@@ -130,15 +237,11 @@ ${rawText}
     }
 
     try {
-      const response = await this.client.messages.create({
-        model: config.ai.model,
-        max_tokens: 2048,
-        system: `你是一个任务去重专家。分析一组任务列表，找出表述不同但实质是同一件事的任务。
+      const systemPrompt = `你是一个任务去重专家。分析一组任务列表，找出表述不同但实质是同一件事的任务。
 比如"推进品牌合作"和"品牌合作方案落地"可能是同一件事。
-只标记你有较高把握确实是重复的任务，不确定的不要标记。`,
-        messages: [{
-          role: 'user',
-          content: `请分析以下任务列表，找出重复/同类项：
+只标记你有较高把握确实是重复的任务，不确定的不要标记。`;
+
+      const userMessage = `请分析以下任务列表，找出重复/同类项：
 
 ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '未指定'}) - ${t.status}`).join('\n')}
 
@@ -154,20 +257,17 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
   ]
 }
 \`\`\`
-如果没有重复项，返回 {"duplicateGroups": []}`,
-        }],
-      });
+如果没有重复项，返回 {"duplicateGroups": []}`;
 
-      const text = response.content[0].text;
-      const jsonMatch = text.match(/```json\n?([\s\S]*?)\n?```/) || text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const result = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+      const text = await this._callAI(systemPrompt, userMessage, 2048);
+      if (!text) return { taskData, duplicates: [] };
+
+      const result = this._extractJSON(text);
+      if (result) {
         const duplicates = result.duplicateGroups || [];
-
         if (duplicates.length > 0) {
           logger.info(`发现 ${duplicates.length} 组重复任务`);
         }
-
         return { taskData, duplicates };
       }
 
@@ -180,7 +280,6 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
 
   /**
    * 综合分析所有部门任务，返回风险评估和建议
-   * （适配v2的状态体系，不再依赖百分比）
    */
   async analyzeAll(taskData) {
     if (!this.aiEnabled) {
@@ -188,13 +287,7 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
       return this._fallbackAnalysis(taskData);
     }
 
-    const prompt = this._buildAnalysisPrompt(taskData);
-
-    try {
-      const response = await this.client.messages.create({
-        model: config.ai.model,
-        max_tokens: 4096,
-        system: `你是一个企业任务管理AI助手，负责分析各部门工作进度并评估风险。
+    const systemPrompt = `你是一个企业任务管理AI助手，负责分析各部门工作进度并评估风险。
 
 任务状态说明：
 - 已完成: 任务已结束
@@ -210,14 +303,19 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
 3. 生成催办建议和预警信息
 4. 语气专业但友善
 
-你必须以JSON格式返回分析结果。`,
-        messages: [{ role: 'user', content: prompt }],
-      });
+你必须以JSON格式返回分析结果。`;
 
-      const text = response.content[0].text;
-      const jsonMatch = text.match(/```json\n?([\s\S]*?)\n?```/) || text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const analysisResult = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+    const userPrompt = this._buildAnalysisPrompt(taskData);
+
+    try {
+      const text = await this._callAI(systemPrompt, userPrompt);
+      if (!text) {
+        logger.warn('所有AI引擎不可用，降级到规则引擎');
+        return this._fallbackAnalysis(taskData);
+      }
+
+      const analysisResult = this._extractJSON(text);
+      if (analysisResult) {
         logger.info('AI分析完成');
         return analysisResult;
       }
@@ -231,7 +329,7 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
   }
 
   /**
-   * 构建分析提示词（v2 适配状态词体系）
+   * 构建分析提示词
    */
   _buildAnalysisPrompt(taskData) {
     const today = new Date().toISOString().split('T')[0];
@@ -289,7 +387,6 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
 
   /**
    * 降级规则分析（当AI API不可用时的备选方案）
-   * 适配v2状态词体系
    */
   _fallbackAnalysis(taskData) {
     const risks = [];
@@ -298,7 +395,6 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
 
     for (const dept of taskData.departments) {
       for (const task of dept.tasks) {
-        // 阻塞检测
         if (task.isBlocked || task.statusKey === 'blocked') {
           risks.push({
             department: dept.department,
@@ -315,7 +411,6 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
           });
         }
 
-        // 截止日期逾期检测
         if (task.deadline && task.statusKey !== 'completed') {
           const daysLeft = Math.ceil((new Date(task.deadline) - new Date()) / 86400000);
           if (daysLeft < 0) {
@@ -337,7 +432,6 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
           }
         }
 
-        // 关键词风险检测
         const fullText = `${task.title} ${task.notes}`;
         const hitKeywords = config.reminder.riskKeywords.filter(kw => fullText.includes(kw));
         if (hitKeywords.length > 0 && !task.isBlocked) {
@@ -351,7 +445,6 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
         }
       }
 
-      // 生成催办消息
       const pendingTasks = dept.tasks.filter(t => t.statusKey !== 'completed');
       if (pendingTasks.length > 0) {
         const owner = dept.owner || pendingTasks[0]?.owner || '负责人';
@@ -382,19 +475,14 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
       return { hasRisk: false, note: 'AI未启用' };
     }
     try {
-      const response = await this.client.messages.create({
-        model: config.ai.model,
-        max_tokens: 1024,
-        system: '你是一个项目风险评估专家。分析任务反馈内容，判断是否存在需要管理层介入的风险。返回JSON格式。',
-        messages: [{
-          role: 'user',
-          content: `部门: ${department}\n任务: ${taskName}\n最新反馈: ${feedbackText}\n\n请返回JSON：{"hasRisk": true/false, "riskLevel": "low/medium/high/critical", "reason": "原因", "needsIntervention": true/false, "suggestion": "建议"}`,
-        }],
-      });
+      const systemPrompt = '你是一个项目风险评估专家。分析任务反馈内容，判断是否存在需要管理层介入的风险。返回JSON格式。';
+      const userMessage = `部门: ${department}\n任务: ${taskName}\n最新反馈: ${feedbackText}\n\n请返回JSON：{"hasRisk": true/false, "riskLevel": "low/medium/high/critical", "reason": "原因", "needsIntervention": true/false, "suggestion": "建议"}`;
 
-      const text = response.content[0].text;
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      return jsonMatch ? JSON.parse(jsonMatch[0]) : { hasRisk: false };
+      const text = await this._callAI(systemPrompt, userMessage, 1024);
+      if (!text) return { hasRisk: false };
+
+      const result = this._extractJSON(text);
+      return result || { hasRisk: false };
     } catch (err) {
       logger.error(`反馈分析失败: ${err.message}`);
       return { hasRisk: false, error: err.message };

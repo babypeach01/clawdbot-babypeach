@@ -10,8 +10,18 @@ module.exports = {
     spaceId: process.env.DINGTALK_SPACE_ID,
   },
   ai: {
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    model: process.env.AI_MODEL || 'claude-sonnet-4-6',
+    // 主引擎：优先使用 Gemini，其次 Kimi，都没有则降级到规则引擎
+    provider: process.env.AI_PROVIDER || 'auto', // auto | gemini | kimi
+    gemini: {
+      apiKey: process.env.GEMINI_API_KEY,
+      model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+      baseUrl: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
+    },
+    kimi: {
+      apiKey: process.env.KIMI_API_KEY,
+      model: process.env.KIMI_MODEL || 'moonshot-v1-8k',
+      baseUrl: process.env.KIMI_BASE_URL || 'https://api.moonshot.cn/v1',
+    },
   },
   reminder: {
     times: (process.env.REMINDER_TIMES || '09:30,14:00,17:00').split(','),
