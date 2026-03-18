@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClawdBot - 任务追踪中心</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0f1117; --surface: #1a1d27; --surface2: #242736;
+  --border: #2e3247; --text: #e4e6f0; --text2: #8b8fa3;
+  --accent: #4f7cff; --accent2: #6c5ce7; --green: #00d68f;
+  --orange: #ffaa00; --red: #ff4757; --cyan: #00cec9;
+}
+body { background: var(--bg); color: var(--text); font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; min-height: 100vh; }
+.container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+
+/* Header */
+.header { display: flex; align-items: center; justify-content: space-between; padding: 16px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+.header h1 { font-size: 22px; font-weight: 600; }
+.header h1 span { color: var(--accent); }
+.header-actions { display: flex; gap: 12px; align-items: center; }
+.header .time { color: var(--text2); font-size: 13px; }
+.btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #3d6af0; }
+.btn-outline { background: transparent; color: var(--text2); border: 1px solid var(--border); }
+.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Stats Row */
+.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.stat-card { background: var(--surface); border-radius: 12px; padding: 20px; border: 1px solid var(--border); }
+.stat-card .label { color: var(--text2); font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-card .value { font-size: 32px; font-weight: 700; }
+.stat-card .sub { font-size: 12px; color: var(--text2); margin-top: 4px; }
+.stat-card.total .value { color: var(--accent); }
+.stat-card.done .value { color: var(--green); }
+.stat-card.progress .value { color: var(--cyan); }
+.stat-card.blocked .value { color: var(--red); }
+.stat-card.waiting .value { color: var(--orange); }
+
+/* Department Grid */
+.dept-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.dept-card { background: var(--surface); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; }
+.dept-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.dept-header h3 { font-size: 15px; font-weight: 600; }
+.dept-header .owner { color: var(--text2); font-size: 12px; }
+.dept-progress { display: flex; gap: 12px; align-items: center; }
+.dept-progress .bar { flex: 1; height: 4px; background: var(--surface2); border-radius: 2px; overflow: hidden; }
+.dept-progress .bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); border-radius: 2px; transition: width 0.6s ease; }
+.dept-progress .pct { font-size: 12px; color: var(--text2); min-width: 32px; text-align: right; }
+.dept-body { padding: 12px 20px; max-height: 320px; overflow-y: auto; }
+.dept-body::-webkit-scrollbar { width: 4px; }
+.dept-body::-webkit-scrollbar-track { background: transparent; }
+.dept-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Task Items */
+.task-item { padding: 10px 0; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: flex-start; }
+.task-item:last-child { border-bottom: none; }
+.task-status { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
+.task-status.completed { background: var(--green); }
+.task-status.in_progress { background: var(--cyan); }
+.task-status.pending_response { background: var(--orange); }
+.task-status.blocked { background: var(--red); }
+.task-status.on_hold { background: var(--text2); }
+.task-status.not_started { background: var(--border); }
+.task-content { flex: 1; min-width: 0; }
+.task-title { font-size: 13px; line-height: 1.5; word-break: break-all; }
+.task-meta { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.task-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: var(--surface2); color: var(--text2); }
+.task-tag.owner { color: var(--accent); border: 1px solid rgba(79,124,255,0.2); background: rgba(79,124,255,0.08); }
+.task-tag.section { color: var(--accent2); border: 1px solid rgba(108,92,231,0.2); background: rgba(108,92,231,0.08); }
+.task-tag.status-blocked { color: var(--red); border: 1px solid rgba(255,71,87,0.2); background: rgba(255,71,87,0.08); }
+.task-tag.status-waiting { color: var(--orange); border: 1px solid rgba(255,170,0,0.2); background: rgba(255,170,0,0.08); }
+.task-tag.deadline { color: var(--red); }
+
+/* Sub-section header */
+.sub-section { font-size: 12px; color: var(--accent2); font-weight: 600; padding: 8px 0 4px; margin-top: 4px; }
+
+/* Alerts Panel */
+.alerts-panel { background: var(--surface); border-radius: 12px; border: 1px solid var(--border); padding: 20px; margin-bottom: 24px; }
+.alerts-panel h2 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+.alert-item { padding: 12px 16px; background: var(--surface2); border-radius: 8px; margin-bottom: 8px; border-left: 3px solid var(--red); font-size: 13px; line-height: 1.6; }
+.alert-item.warning { border-left-color: var(--orange); }
+
+/* Upload Area */
+.upload-area { background: var(--surface); border: 2px dashed var(--border); border-radius: 12px; padding: 40px; text-align: center; margin-bottom: 24px; transition: border-color 0.2s; }
+.upload-area:hover { border-color: var(--accent); }
+.upload-area textarea { width: 100%; min-height: 120px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; color: var(--text); font-size: 13px; resize: vertical; margin: 16px 0; font-family: inherit; }
+.upload-area textarea:focus { outline: none; border-color: var(--accent); }
+.upload-area .hint { color: var(--text2); font-size: 13px; margin-bottom: 8px; }
+
+/* Loading */
+.loading { text-align: center; padding: 60px; color: var(--text2); }
+.spinner { display: inline-block; width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Empty State */
+.empty { text-align: center; padding: 60px 20px; color: var(--text2); }
+.empty h3 { font-size: 18px; margin-bottom: 8px; color: var(--text); }
+
+/* Tabs */
+.tabs { display: flex; gap: 4px; margin-bottom: 20px; background: var(--surface); border-radius: 10px; padding: 4px; border: 1px solid var(--border); width: fit-content; }
+.tab { padding: 8px 20px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text2); transition: all 0.2s; border: none; background: transparent; }
+.tab.active { background: var(--accent); color: #fff; }
+.tab:hover:not(.active) { color: var(--text); }
+
+/* Footer */
+.footer { text-align: center; padding: 20px; color: var(--text2); font-size: 12px; border-top: 1px solid var(--border); margin-top: 40px; }
+
+@media (max-width: 768px) {
+  .container { padding: 12px; }
+  .dept-grid { grid-template-columns: 1fr; }
+  .stats-row { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Header -->
+  <div class="header">
+    <h1><span>Clawd</span>Bot 任务追踪中心</h1>
+    <div class="header-actions">
+      <span class="time" id="currentTime"></span>
+      <button class="btn btn-outline" onclick="loadStatus()">刷新数据</button>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="dashboard" onclick="switchTab('dashboard')">仪表盘</button>
+    <button class="tab" data-tab="upload" onclick="switchTab('upload')">提交文档</button>
+  </div>
+
+  <!-- Upload Tab -->
+  <div id="tab-upload" style="display:none">
+    <div class="upload-area">
+      <div class="hint">粘贴你的钉钉/飞书任务文档内容，系统将自动解析并分析</div>
+      <textarea id="docInput" placeholder="将文档内容粘贴到这里...
+
+支持格式：
+一、部门名 @负责人
+待完成
+1. 任务描述 @负责人 ：状态
+已完成
+1. 已完成任务"></textarea>
+      <div style="display:flex;gap:12px;justify-content:center">
+        <button class="btn btn-primary" onclick="submitDoc(false)">解析分析</button>
+        <button class="btn btn-outline" onclick="submitDoc(true)">AI深度提取</button>
+      </div>
+      <div id="uploadStatus" style="margin-top:12px;font-size:13px;color:var(--text2)"></div>
+    </div>
+  </div>
+
+  <!-- Dashboard Tab -->
+  <div id="tab-dashboard">
+    <div id="content">
+      <div class="empty">
+        <h3>暂无数据</h3>
+        <p>请先通过「提交文档」上传任务清单，或等待系统自动抓取</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">ClawdBot Task Tracking System &copy; 2026</div>
+</div>
+
+<script>
+const API = '';
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.getElementById('tab-dashboard').style.display = name === 'dashboard' ? '' : 'none';
+  document.getElementById('tab-upload').style.display = name === 'upload' ? '' : 'none';
+}
+
+function updateTime() {
+  document.getElementById('currentTime').textContent = new Date().toLocaleString('zh-CN', { hour12: false });
+}
+setInterval(updateTime, 1000);
+updateTime();
+
+async function loadStatus() {
+  const el = document.getElementById('content');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><p style="margin-top:12px">加载中...</p></div>';
+  try {
+    const res = await fetch(API + '/api/status');
+    const data = await res.json();
+    if (data.tasks) {
+      renderDashboard(data.tasks, data.analysis);
+    } else {
+      el.innerHTML = '<div class="empty"><h3>暂无数据</h3><p>请先通过「提交文档」上传任务清单</p></div>';
+    }
+  } catch (e) {
+    el.innerHTML = '<div class="empty"><h3>连接失败</h3><p>' + e.message + '</p></div>';
+  }
+}
+
+async function submitDoc(useAi) {
+  const content = document.getElementById('docInput').value.trim();
+  if (!content) return alert('请粘贴文档内容');
+
+  const statusEl = document.getElementById('uploadStatus');
+  statusEl.textContent = useAi ? 'AI深度分析中，请稍候...' : '解析分析中...';
+  statusEl.style.color = 'var(--accent)';
+
+  try {
+    const res = await fetch(API + '/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, useAiExtract: useAi }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      statusEl.textContent = `解析成功！${data.taskData.summary.totalTasks}个任务，${data.taskData.departments.length}个部门`;
+      statusEl.style.color = 'var(--green)';
+      renderDashboard(data.taskData, data.analysisResult);
+      switchTab('dashboard');
+    } else {
+      statusEl.textContent = '分析失败: ' + (data.error || '未知错误');
+      statusEl.style.color = 'var(--red)';
+    }
+  } catch (e) {
+    statusEl.textContent = '请求失败: ' + e.message;
+    statusEl.style.color = 'var(--red)';
+  }
+}
+
+function renderDashboard(taskData, analysis) {
+  const s = taskData.summary;
+  const el = document.getElementById('content');
+
+  let html = '';
+
+  // Stats row
+  html += '<div class="stats-row">';
+  html += statCard('总任务', s.totalTasks, '', 'total');
+  html += statCard('已完成', s.completedTasks, pct(s.completedTasks, s.totalTasks), 'done');
+  html += statCard('推进中', s.inProgressTasks, '', 'progress');
+  html += statCard('阻塞', s.blockedTasks, '', 'blocked');
+  html += statCard('催办中', s.pendingResponseTasks, '', 'waiting');
+  html += statCard('暂缓', (s.onHoldTasks || 0) + (s.notStartedTasks || 0), '', '');
+  html += '</div>';
+
+  // Alerts
+  if (analysis && analysis.alertsForManager && analysis.alertsForManager.length > 0) {
+    html += '<div class="alerts-panel"><h2>&#9888;&#65039; 管理预警</h2>';
+    for (const alert of analysis.alertsForManager) {
+      const cls = alert.level === 'high' ? '' : 'warning';
+      html += `<div class="alert-item ${cls}">${esc(alert.message || alert.title || JSON.stringify(alert))}</div>`;
+    }
+    html += '</div>';
+  }
+
+  // Departments
+  html += '<div class="dept-grid">';
+  for (const dept of taskData.departments) {
+    html += renderDeptCard(dept);
+  }
+  html += '</div>';
+
+  el.innerHTML = html;
+}
+
+function renderDeptCard(dept) {
+  const pending = dept.pendingCount || dept.tasks.filter(t => !t.isCompleted).length;
+  const completed = dept.completedCount || dept.tasks.filter(t => t.isCompleted).length;
+  const total = pending + completed;
+  const pctVal = total > 0 ? Math.round(completed / total * 100) : 0;
+
+  let html = '<div class="dept-card">';
+  html += '<div class="dept-header">';
+  html += `<div><h3>${esc(dept.department)}</h3><span class="owner">${esc(dept.owner || '')}</span></div>`;
+  html += `<div style="text-align:right"><span style="font-size:20px;font-weight:700;color:var(--green)">${completed}</span><span style="color:var(--text2);font-size:13px">/${total}</span></div>`;
+  html += '</div>';
+
+  // Progress bar
+  html += '<div style="padding:8px 20px 0"><div class="dept-progress">';
+  html += `<div class="bar"><div class="bar-fill" style="width:${pctVal}%"></div></div>`;
+  html += `<div class="pct">${pctVal}%</div>`;
+  html += '</div></div>';
+
+  // Task list (pending only)
+  const pendingTasks = dept.tasks.filter(t => !t.isCompleted);
+  html += '<div class="dept-body">';
+  if (pendingTasks.length === 0) {
+    html += '<div style="text-align:center;padding:20px;color:var(--green);font-size:13px">全部完成</div>';
+  } else {
+    let currentSub = '';
+    for (const task of pendingTasks) {
+      if (task.subSection && task.subSection !== currentSub) {
+        currentSub = task.subSection;
+        html += `<div class="sub-section">${esc(currentSub)}</div>`;
+      }
+      html += renderTaskItem(task);
+    }
+  }
+  html += '</div></div>';
+  return html;
+}
+
+function renderTaskItem(task) {
+  let html = '<div class="task-item">';
+  html += `<div class="task-status ${task.statusKey || 'in_progress'}"></div>`;
+  html += '<div class="task-content">';
+  html += `<div class="task-title">${esc(task.title)}</div>`;
+  html += '<div class="task-meta">';
+  if (task.owner) html += `<span class="task-tag owner">${esc(task.owner)}</span>`;
+  if (task.statusKey === 'blocked') html += '<span class="task-tag status-blocked">阻塞</span>';
+  else if (task.statusKey === 'pending_response') html += '<span class="task-tag status-waiting">催办中</span>';
+  if (task.deadline) html += `<span class="task-tag deadline">${task.deadline}</span>`;
+  html += '</div></div></div>';
+  return html;
+}
+
+function statCard(label, value, sub, cls) {
+  return `<div class="stat-card ${cls}"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
+}
+
+function pct(a, b) { return b > 0 ? `占比 ${Math.round(a / b * 100)}%` : ''; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// Auto-load on page open
+loadStatus();
+</script>
+</body>
+</html>

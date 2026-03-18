@@ -11,6 +11,7 @@
  * - 生成领导看板和周报
  */
 const express = require('express');
+const path = require('path');
 const dayjs = require('dayjs');
 const config = require('./config');
 const { runFullCycle, startScheduler } = require('./scheduler');
@@ -23,6 +24,7 @@ const logger = require('./utils/logger');
 
 const app = express();
 app.use(express.json());
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // ============================================
 // HTTP API 接口（支持手动触发和外部集成）
@@ -181,6 +183,7 @@ app.get('/api/trends', (req, res) => {
 app.listen(config.server.port, () => {
   logger.info(`HTTP服务已启动: http://localhost:${config.server.port}`);
   logger.info('可用接口:');
+  logger.info('  GET  /               - Web管理后台');
   logger.info('  GET  /health          - 健康检查');
   logger.info('  POST /api/trigger     - 手动触发催办流程');
   logger.info('  POST /api/analyze     - 提交文档内容分析');
