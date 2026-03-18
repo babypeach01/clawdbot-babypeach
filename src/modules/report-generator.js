@@ -67,18 +67,35 @@ class ReportGenerator {
     const sectionNum = analysisResult.alertsForManager?.length > 0 ? '四' : '三';
     report += `## ${sectionNum}、各部门详情\n\n`;
     for (const dept of taskData.departments) {
-      const completedCount = dept.tasks.filter(t => t.statusKey === 'completed').length;
-      report += `### ${dept.department}${dept.owner ? `（${dept.owner}）` : ''} ${completedCount}/${dept.tasks.length}完成\n\n`;
+      const pendingCount = dept.pendingCount || dept.tasks.filter(t => t.statusKey !== 'completed').length;
+      const completedCount = dept.completedCount || dept.tasks.filter(t => t.statusKey === 'completed').length;
+      report += `### ${dept.department}${dept.owner ? `（${dept.owner}）` : ''} 待办${pendingCount} / 已完成${completedCount}\n\n`;
 
-      for (const task of dept.tasks) {
-        const statusIcon = this._statusIcon(task.statusKey);
-        report += `${statusIcon} **${task.title}**\n`;
-        report += `   - 状态: ${task.status}`;
-        if (task.owner) report += ` | 负责人: ${task.owner}`;
-        report += '\n';
-        if (task.deadline) report += `   - 截止: ${task.deadline}\n`;
-        if (task.notes) report += `   - 备注: ${task.notes}\n`;
-        report += '\n';
+      // 按子板块分组展示待办任务
+      const pendingTasks = dept.tasks.filter(t => !t.isCompleted);
+      const completedTasks = dept.tasks.filter(t => t.isCompleted);
+
+      if (pendingTasks.length > 0) {
+        let currentSubSection = '';
+        for (const task of pendingTasks) {
+          if (task.subSection && task.subSection !== currentSubSection) {
+            currentSubSection = task.subSection;
+            report += `**${currentSubSection}**\n\n`;
+          }
+          const statusIcon = this._statusIcon(task.statusKey);
+          report += `${statusIcon} **${task.title}**\n`;
+          report += `   - 状态: ${task.status}`;
+          if (task.owner) report += ` | 负责人: ${task.owner}`;
+          if (task.owners && task.owners.length > 1) report += `（协同: ${task.owners.slice(1).join(', ')}）`;
+          report += '\n';
+          if (task.deadline) report += `   - 截止: ${task.deadline}\n`;
+          if (task.notes) report += `   - 备注: ${task.notes}\n`;
+          report += '\n';
+        }
+      }
+
+      if (completedTasks.length > 0) {
+        report += `✅ **已完成** (${completedTasks.length}项): ${completedTasks.map(t => t.title).join('、')}\n\n`;
       }
     }
 

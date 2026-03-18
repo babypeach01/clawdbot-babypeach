@@ -61,15 +61,17 @@ class ReminderEngine {
       }
     }
 
-    // 各部门进度
+    // 各部门进度（只展示待办任务）
     markdown += `### 📋 各部门进度\n\n`;
     for (const dept of taskData.departments) {
-      const completedCount = dept.tasks.filter(t => t.statusKey === 'completed').length;
-      const totalCount = dept.tasks.length;
-      markdown += `**${dept.department}**${dept.owner ? `（${dept.owner}）` : ''}: ${completedCount}/${totalCount} 完成\n\n`;
-      for (const task of dept.tasks) {
+      const pendingCount = dept.pendingCount || dept.tasks.filter(t => !t.isCompleted).length;
+      const completedCount = dept.completedCount || dept.tasks.filter(t => t.isCompleted).length;
+      markdown += `**${dept.department}**${dept.owner ? `（${dept.owner}）` : ''}: 待办${pendingCount} / 已完成${completedCount}\n\n`;
+      const pendingTasks = dept.tasks.filter(t => !t.isCompleted);
+      for (const task of pendingTasks) {
         const icon = this._statusIcon(task.statusKey);
-        markdown += `- ${icon} ${task.title} — ${task.status}`;
+        const sub = task.subSection ? `[${task.subSection}] ` : '';
+        markdown += `- ${icon} ${sub}${task.title} — ${task.status}`;
         if (task.owner) markdown += `（${task.owner}）`;
         markdown += '\n';
       }
