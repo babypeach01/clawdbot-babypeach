@@ -89,106 +89,57 @@ async function main() {
     }
   }
 
-  // 方式C: 钉钉文档 Doc API（/v1.0/doc/）
-  if (operatorId) {
-    console.log('\n--- 尝试 Doc API (钉钉文档空间) ---\n');
+  // 方式C: 直接用 Workbook API 读取表格（不需要 spaceId）
+  if (operatorId && docId) {
+    console.log('\n--- 尝试 Workbook API (直接读取表格) ---\n');
+    console.log(`workbookId: ${docId}`);
+    console.log(`operatorId: ${operatorId}\n`);
 
-    // C1: 列出文档空间
+    // C1: 获取工作表列表
     try {
-      const res = await axios.post(`${BASE}/v1.0/doc/spaces/query`, {
-        operatorId,
-        maxResults: 50,
-      }, { headers });
-      console.log('文档空间列表:');
-      const spaces = res.data.items || res.data.spaces || [];
-      if (spaces.length === 0) {
-        console.log('  (空 - 检查 items/spaces 字段)');
+      const res = await axios.get(`${BASE}/v1.0/doc/workbooks/${docId}/sheets`, {
+        headers,
+        params: { operatorId },
+      });
+      console.log('✅ 工作表列表:');
+      const sheets = res.data.value || res.data.sheets || [];
+      if (sheets.length === 0) {
+        console.log('  (空)');
         console.log('  原始响应:', JSON.stringify(res.data).slice(0, 500));
       }
-      for (const sp of spaces) {
-        console.log(`  - ${sp.name || sp.spaceName || '未命名'} | spaceId: ${sp.id || sp.spaceId}`);
-        const spaceId = sp.id || sp.spaceId;
+      for (const sheet of sheets) {
+        const sheetId = sheet.id || sheet.sheetId;
+        const sheetName = sheet.name || sheet.title || '未命名';
+        console.log(`  - ${sheetName} | id: ${sheetId} | visibility: ${sheet.visibility || 'N/A'}`);
 
-        // 列出空间下的文档
+        // C2: 读取每个工作表的前几行数据
         try {
-          const dRes = await axios.post(`${BASE}/v1.0/doc/spaces/${spaceId}/dentries/listAll`, {
-            operatorId,
-            maxResults: 50,
-          }, { headers });
-          const dentries = dRes.data.items || dRes.data.dentries || [];
-          dentries.forEach(d => {
-            console.log(`    - ${d.name || d.fileName} | id: ${d.id || d.dentryUuid} | type: ${d.contentType || d.type}`);
-            const dId = d.id || d.dentryUuid;
-            if (dId === docId || (d.name || '').includes('任务')) {
-              console.log(`\n    >>> 找到目标! spaceId: ${spaceId}, dentryUuid: ${dId} <<<\n`);
-            }
+          const rangeAddr = `A1:Z5`; // 读取前5行
+          const encodedName = encodeURIComponent(sheetName);
+          const rangeRes = await axios.get(
+            `${BASE}/v1.0/doc/workbooks/${docId}/sheets/${encodedName}/ranges/${rangeAddr}`,
+            { headers, params: { operatorId } }
+          );
+          const values = rangeRes.data.displayValues || rangeRes.data.values || [];
+          console.log(`    前5行数据:`);
+          values.forEach((row, i) => {
+            const rowStr = (row || []).map(c => c || '').join(' | ');
+            console.log(`    [${i + 1}] ${rowStr}`);
           });
+          console.log();
         } catch (e2) {
-          console.log(`    文档列表失败: ${e2.response?.data?.message || e2.message}`);
-          // 备选: GET 方式
-          try {
-            const dRes2 = await axios.get(`${BASE}/v1.0/doc/spaces/${spaceId}/dentries`, {
-              headers,
-              params: { operatorId, maxResults: 50 },
-            });
-            const dentries = dRes2.data.items || dRes2.data.dentries || [];
-            dentries.forEach(d => {
-              console.log(`    - ${d.name || d.fileName} | id: ${d.id || d.dentryUuid} | type: ${d.contentType || d.type}`);
-            });
-          } catch (e3) {
-            console.log(`    备选GET也失败: ${e3.response?.data?.message || e3.message}`);
-          }
+          console.log(`    读取数据失败: ${e2.response?.data?.message || e2.message}`);
+          console.log(`    状态码: ${e2.response?.status}`);
         }
       }
     } catch (e) {
-      console.log('Doc 空间查询失败:', e.response?.data?.message || e.message);
+      console.log('Workbook API 失败:', e.response?.data?.message || e.message);
       console.log('  状态码:', e.response?.status);
       console.log('  完整错误:', JSON.stringify(e.response?.data || {}).slice(0, 500));
-    }
-
-    // C2: 直接用 dentryUuid 尝试获取文档信息（需要 spaceId）
-    // 如果知道 spaceId 可以直接查
-    if (process.env.DINGTALK_SPACE_ID && process.env.DINGTALK_SPACE_ID !== 'your_space_id_here') {
-      console.log('\n--- 直接查询文档 ---\n');
-      try {
-        const res = await axios.get(
-          `${BASE}/v1.0/doc/spaces/${process.env.DINGTALK_SPACE_ID}/dentries/${docId}`,
-          { headers, params: { operatorId } }
-        );
-        console.log('文档信息:', JSON.stringify(res.data, null, 2));
-      } catch (e) {
-        console.log('直接查询失败:', e.response?.data?.message || e.message);
-      }
-    }
-
-    // C3: 尝试 v2 文档 API
-    console.log('\n--- 尝试 v2 Doc API ---\n');
-    try {
-      const res = await axios.get(`${BASE}/v2.0/doc/spaces`, {
-        headers,
-        params: { operatorId, maxResults: 50 },
-      });
-      console.log('v2 文档空间:', JSON.stringify(res.data).slice(0, 1000));
-    } catch (e) {
-      console.log('v2 Doc 空间失败:', e.response?.data?.message || e.message);
-    }
-
-    // C4: 尝试 Drive API (备选)
-    console.log('\n--- 尝试 Drive API (备选) ---\n');
-    for (const spaceType of ['personal', 'org']) {
-      try {
-        const res = await axios.get(`${BASE}/v1.0/drive/spaces`, {
-          headers,
-          params: { unionId: operatorId, spaceType, maxResults: 20 },
-        });
-        const spaces = res.data.spaces || [];
-        console.log(`Drive [${spaceType}]: ${spaces.length} 个空间`);
-        for (const sp of spaces) {
-          console.log(`  - ${sp.spaceName || '未命名'} | spaceId: ${sp.spaceId}`);
-        }
-      } catch (e) {
-        console.log(`Drive [${spaceType}] 失败:`, e.response?.data?.message || e.message);
-      }
+      console.log('\n  ⚠️  如果返回 403/权限错误，需要在钉钉开放平台给应用添加以下权限:');
+      console.log('     - 文档 > 表格 > 获取工作表');
+      console.log('     - 文档 > 表格 > 获取单元格区域');
+      console.log('     应用管理后台: https://open-dev.dingtalk.com/');
     }
   }
 
