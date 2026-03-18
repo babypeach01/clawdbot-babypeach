@@ -18,10 +18,12 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-// 引入消息模板、任务解析器、图表生成器
+// 引入消息模板、任务解析器、图表生成器、HTML看板
 const messageTemplates = require('../src/modules/message-templates');
 const taskParser = require('../src/modules/task-parser');
 const chartGenerator = require('../src/modules/chart-generator');
+const dashboardHtml = require('../src/modules/dashboard-html');
+const ossUploader = require('../src/modules/oss-uploader');
 
 const WEBHOOK = process.env.DINGTALK_ROBOT_WEBHOOK;
 const SECRET = process.env.DINGTALK_ROBOT_SECRET;
@@ -35,7 +37,7 @@ function sign(timestamp, secret) {
   );
 }
 
-async function sendDingTalk(title, content, msgtype = 'markdown') {
+async function sendDingTalk(title, content, msgtype = 'markdown', options = {}) {
   if (!WEBHOOK) {
     console.error('错误: 未配置 DINGTALK_ROBOT_WEBHOOK，请检查 .env 文件');
     return false;
@@ -47,9 +49,23 @@ async function sendDingTalk(title, content, msgtype = 'markdown') {
     url += `&timestamp=${timestamp}&sign=${sign(timestamp, SECRET)}`;
   }
 
-  const body = msgtype === 'text'
-    ? { msgtype: 'text', text: { content } }
-    : { msgtype: 'markdown', markdown: { title, text: content } };
+  let body;
+  if (msgtype === 'actionCard') {
+    body = {
+      msgtype: 'actionCard',
+      actionCard: {
+        title,
+        text: content,
+        singleTitle: options.btnTitle || '📊 查看完整看板',
+        singleURL: options.btnUrl || '',
+        btnOrientation: '0',
+      },
+    };
+  } else if (msgtype === 'text') {
+    body = { msgtype: 'text', text: { content } };
+  } else {
+    body = { msgtype: 'markdown', markdown: { title, text: content } };
+  }
 
   try {
     const res = await axios.post(url, body);
@@ -131,29 +147,86 @@ async function sendMorningBrief(taskData, dryRun) {
 }
 
 /**
- * 发送部门看板（高清图表 + OSS）
+ * 发送部门看板（ActionCard + ECharts 交互式看板页面）
  */
 async function sendDashboard(taskData, dryRun) {
-  console.log('\n📊 [2] 部门看板（生成高清图表中...）');
+  console.log('\n📊 [2] 部门看板（生成交互式看板...）');
   console.log('─'.repeat(40));
 
-  // 生成图表并上传 OSS
+  const dayjs = require('dayjs');
+  const today = dayjs();
+  const { summary } = taskData;
+  const totalPending = summary.totalTasks - summary.completedTasks;
+
+  // 1. 生成 ECharts HTML 看板页面 → 上传 OSS
+  let dashboardUrl = '';
+  try {
+    const html = dashboardHtml.generate(taskData);
+    dashboardUrl = await ossUploader.uploadReport(html, 'dashboard');
+    console.log(`  看板页面已上传: ${dashboardUrl}`);
+  } catch (e) {
+    console.log(`  看板页面上传失败: ${e.message}`);
+    // 降级：保存本地
+    const fs = require('fs');
+    const outDir = path.join(__dirname, '..', 'data');
+    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+    const html = dashboardHtml.generate(taskData);
+    fs.writeFileSync(path.join(outDir, 'dashboard.html'), html);
+    console.log('  已保存到本地: data/dashboard.html');
+  }
+
+  // 2. 生成图表并上传（用于 ActionCard 封面）
   let chartUrls = {};
   try {
     chartUrls = await chartGenerator.generateAll(taskData);
-    const uploaded = Object.keys(chartUrls).filter(k => chartUrls[k]);
-    console.log(`  图表生成: ${uploaded.length}张已上传 OSS`);
-    if (chartUrls.deptBarUrl) console.log(`  条形图: ${chartUrls.deptBarUrl}`);
-    if (chartUrls.healthChartUrl) console.log(`  异常图: ${chartUrls.healthChartUrl}`);
+    console.log('  图表已生成并上传 OSS');
   } catch (e) {
-    console.log(`  图表生成失败: ${e.message}（消息将不含图片）`);
+    console.log(`  图表上传失败: ${e.message}`);
   }
 
-  const { title, text } = messageTemplates.generateDashboard(taskData, chartUrls);
-  console.log(text);
+  // 3. 构建 ActionCard 消息
+  const dateStr = today.format('M/D');
+  const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.day()];
+
+  let cardText = `## 📊 ${dateStr} ${weekday} · 部门工作看板\n\n`;
+  cardText += `**${totalPending}** 待办 · **${summary.completedTasks}** 已完成 · 🔴 ${summary.blockedTasks}阻塞 · 🟡 ${summary.pendingResponseTasks || 0}催办\n\n`;
+
+  // 嵌入图表图片
+  if (chartUrls.deptBarUrl) cardText += `![](${chartUrls.deptBarUrl})\n\n`;
+  else if (chartUrls.healthChartUrl) cardText += `![](${chartUrls.healthChartUrl})\n\n`;
+
+  // 异常摘要
+  const problems = [];
+  for (const dept of taskData.departments) {
+    const blocked = (dept.tasks || []).filter(t => t.statusKey === 'blocked' && !t.isCompleted).length;
+    const overdue = (dept.tasks || []).filter(t => !t.isCompleted && t.deadline && dayjs(t.deadline).isBefore(today, 'day')).length;
+    if (blocked > 0 || overdue > 0) {
+      const issues = [];
+      if (blocked) issues.push(`${blocked}阻塞`);
+      if (overdue) issues.push(`${overdue}逾期`);
+      problems.push(`${chartGenerator._shortName ? chartGenerator._shortName(dept.department) : dept.department.slice(0,4)}: ${issues.join('/')}`);
+    }
+  }
+  if (problems.length > 0) {
+    cardText += `**⚠️** ${problems.slice(0, 3).join(' · ')}\n\n`;
+  }
+
+  cardText += `---\n\n*🤖 AI 智能任务跟踪系统 · ${today.format('HH:mm')}*`;
+
+  console.log(cardText);
   console.log('─'.repeat(40));
+
   if (!dryRun) {
-    return sendDingTalk(title, text);
+    if (dashboardUrl) {
+      // 发送 ActionCard（带"查看完整看板"按钮）
+      return sendDingTalk(`${dateStr} 部门看板`, cardText, 'actionCard', {
+        btnTitle: '📊 查看交互式看板',
+        btnUrl: dashboardUrl,
+      });
+    } else {
+      // 降级为普通 markdown
+      return sendDingTalk(`${dateStr} 部门看板`, cardText);
+    }
   }
   return true;
 }
