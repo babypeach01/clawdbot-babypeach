@@ -89,6 +89,39 @@ async function main() {
     }
 
     // A2: 知识库列表
+    // A3: 直接读取目标文档节点信息和内容
+    if (docId) {
+      console.log(`\n--- 直接读取目标文档 (nodeId: ${docId}) ---\n`);
+
+      // 尝试获取节点信息
+      const tryApis = [
+        { name: 'wiki/nodes/get', method: 'get', url: `${BASE}/v2.0/wiki/nodes/${docId}`, params: { operatorId } },
+        { name: 'wiki/nodes/body', method: 'get', url: `${BASE}/v2.0/wiki/nodes/${docId}/body`, params: { operatorId } },
+        { name: 'doc/documents/body (v1)', method: 'get', url: `${BASE}/v1.0/doc/documents/${docId}`, params: { operatorId } },
+        { name: 'doc/dentries (v2)', method: 'get', url: `${BASE}/v2.0/doc/dentries/${docId}`, params: { operatorId } },
+      ];
+
+      for (const api of tryApis) {
+        try {
+          const res = api.method === 'get'
+            ? await axios.get(api.url, { headers, params: api.params })
+            : await axios.post(api.url, api.params, { headers });
+          console.log(`✅ ${api.name} 成功:`);
+          const data = JSON.stringify(res.data, null, 2);
+          console.log(data.slice(0, 2000));
+          if (data.length > 2000) console.log('  ... (截断)');
+          console.log();
+        } catch (e) {
+          console.log(`❌ ${api.name}: ${e.response?.status} - ${e.response?.data?.message || e.message}`);
+          if (e.response?.status === 403) {
+            const scopes = e.response?.data?.accessdenieddetail?.requiredScopes;
+            if (scopes) console.log(`   需要权限: ${scopes.join(', ')}`);
+          }
+        }
+      }
+    }
+
+    // A4: 知识库列表（简化）
     console.log('\n--- 知识库列表 ---\n');
     try {
       const res = await axios.get(`${BASE}/v2.0/wiki/workspaces`, {
@@ -97,7 +130,7 @@ async function main() {
       });
       const workspaces = res.data.workspaces || [];
       workspaces.forEach(ws => {
-        console.log(`  - ${ws.name} | workspaceId: ${ws.workspaceId} | rootNodeId: ${ws.rootNodeId}`);
+        console.log(`  - ${ws.name} | workspaceId: ${ws.workspaceId}`);
       });
       console.log();
     } catch (e) {
