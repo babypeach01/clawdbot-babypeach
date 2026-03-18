@@ -18,9 +18,10 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-// 引入消息模板和任务解析器
+// 引入消息模板、任务解析器、图表生成器
 const messageTemplates = require('../src/modules/message-templates');
 const taskParser = require('../src/modules/task-parser');
+const chartGenerator = require('../src/modules/chart-generator');
 
 const WEBHOOK = process.env.DINGTALK_ROBOT_WEBHOOK;
 const SECRET = process.env.DINGTALK_ROBOT_SECRET;
@@ -130,13 +131,25 @@ async function sendMorningBrief(taskData, dryRun) {
 }
 
 /**
- * 发送部门看板（图表为主）
+ * 发送部门看板（高清图表 + OSS）
  */
 async function sendDashboard(taskData, dryRun) {
-  console.log('\n📊 [2] 部门看板');
+  console.log('\n📊 [2] 部门看板（生成高清图表中...）');
   console.log('─'.repeat(40));
-  const changes = taskParser.detectChanges(taskData, taskData); // 暂无历史数据对比
-  const { title, text } = messageTemplates.generateDashboard(taskData, changes);
+
+  // 生成图表并上传 OSS
+  let chartUrls = {};
+  try {
+    chartUrls = await chartGenerator.generateAll(taskData);
+    const uploaded = Object.keys(chartUrls).filter(k => chartUrls[k]);
+    console.log(`  图表生成: ${uploaded.length}张已上传 OSS`);
+    if (chartUrls.deptBarUrl) console.log(`  条形图: ${chartUrls.deptBarUrl}`);
+    if (chartUrls.healthChartUrl) console.log(`  异常图: ${chartUrls.healthChartUrl}`);
+  } catch (e) {
+    console.log(`  图表生成失败: ${e.message}（消息将不含图片）`);
+  }
+
+  const { title, text } = messageTemplates.generateDashboard(taskData, chartUrls);
   console.log(text);
   console.log('─'.repeat(40));
   if (!dryRun) {
@@ -184,12 +197,21 @@ async function sendUrgentAlerts(taskData, dryRun) {
 }
 
 /**
- * 发送周回顾
+ * 发送周回顾（高清图表 + OSS）
  */
 async function sendWeeklyReview(taskData, dryRun) {
-  console.log('\n📅 [4] 周回顾');
+  console.log('\n📅 [4] 周回顾（生成高清图表中...）');
   console.log('─'.repeat(40));
-  const { title, text } = messageTemplates.generateWeeklyReview(taskData, null);
+
+  let chartUrls = {};
+  try {
+    chartUrls = await chartGenerator.generateAll(taskData);
+    console.log(`  图表已生成并上传`);
+  } catch (e) {
+    console.log(`  图表生成失败: ${e.message}`);
+  }
+
+  const { title, text } = messageTemplates.generateWeeklyReview(taskData, null, chartUrls);
   console.log(text);
   console.log('─'.repeat(40));
   if (!dryRun) {

@@ -98,18 +98,15 @@ class MessageTemplates {
 
   /**
    * ═══════════════════════════════════════
-   *  部门看板 - 图表图片为主（一屏，3秒扫完）
+   *  部门看板 - 高清图表（异步，需 await）
+   *  chartUrls 由调用方传入（已上传到 OSS）
    * ═══════════════════════════════════════
    */
-  generateDashboard(taskData, changes) {
+  generateDashboard(taskData, chartUrls) {
     const today = dayjs();
     const dateStr = today.format('M/D');
     const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.day()];
     const { summary } = taskData;
-
-    // 生成图表 URL
-    const barChartUrl = chartGenerator.deptBarChart(taskData.departments);
-    const doughnutUrl = chartGenerator.statusDoughnut(summary);
 
     let msg = `## 📊 ${dateStr} ${weekday} · 部门工作看板\n\n`;
 
@@ -118,15 +115,15 @@ class MessageTemplates {
     msg += `**${totalPending}** 待办 · **${summary.completedTasks}** 已完成 · `;
     msg += `🔴 ${summary.blockedTasks}阻塞 · 🟡 ${summary.pendingResponseTasks || 0}催办\n\n`;
 
-    // 嵌入图表图片
-    msg += `![部门任务分布](${barChartUrl})\n\n`;
-    msg += `![任务状态总览](${doughnutUrl})\n\n`;
+    // 嵌入图表图片（如果有 OSS URL）
+    if (chartUrls?.deptBarUrl) msg += `![部门任务分布](${chartUrls.deptBarUrl})\n\n`;
+    if (chartUrls?.healthChartUrl) msg += `![异常信号](${chartUrls.healthChartUrl})\n\n`;
 
     // 异常部门标记（只列有问题的，最多3个）
     const problemDepts = [];
     for (const dept of taskData.departments) {
-      const blockedCount = dept.tasks.filter(t => t.statusKey === 'blocked').length;
-      const overdueCount = dept.tasks.filter(t => {
+      const blockedCount = (dept.tasks || []).filter(t => t.statusKey === 'blocked').length;
+      const overdueCount = (dept.tasks || []).filter(t => {
         if (t.isCompleted || !t.deadline) return false;
         return dayjs(t.deadline).isBefore(today, 'day');
       }).length;
@@ -145,9 +142,9 @@ class MessageTemplates {
       }
     }
 
-    msg += `---\n\n*🤖 ${today.format('HH:mm')} 自动生成*`;
+    msg += `---\n\n*🤖 AI 智能任务跟踪系统 · ${today.format('HH:mm')}*`;
 
-    return { title: `${dateStr} 部门看板`, text: msg, chartUrls: { barChartUrl, doughnutUrl } };
+    return { title: `${dateStr} 部门看板`, text: msg };
   }
 
   /**
@@ -216,14 +213,10 @@ class MessageTemplates {
    *  周五回顾（替代当日晚报）
    * ═══════════════════════════════════════
    */
-  generateWeeklyReview(taskData, weekSnapshots) {
+  generateWeeklyReview(taskData, weekSnapshots, chartUrls) {
     const today = dayjs();
     const weekStart = today.subtract(4, 'day').format('M/D');
     const weekEnd = today.format('M/D');
-
-    // 图表
-    const barChartUrl = chartGenerator.deptBarChart(taskData.departments);
-    const personUrl = chartGenerator.personLoadChart(taskData.departments);
 
     let msg = `## 📅 本周回顾 ${weekStart}-${weekEnd}\n\n`;
 
@@ -239,8 +232,9 @@ class MessageTemplates {
     }
 
     // 图表
-    msg += `![部门任务分布](${barChartUrl})\n\n`;
-    msg += `![个人任务负荷](${personUrl})\n\n`;
+    if (chartUrls?.deptBarUrl) msg += `![部门任务分布](${chartUrls.deptBarUrl})\n\n`;
+    if (chartUrls?.personLoadUrl) msg += `![个人任务负荷](${chartUrls.personLoadUrl})\n\n`;
+    if (chartUrls?.statusPieUrl) msg += `![任务状态总览](${chartUrls.statusPieUrl})\n\n`;
 
     // 持续未动（最多5条）
     const stuckItems = [];
