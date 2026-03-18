@@ -195,9 +195,11 @@ async function sendDashboard(taskData, dryRun) {
   let cardText = `## 📊 ${dateStr} ${weekday} · 部门工作看板\n\n`;
   cardText += `**${totalPending}** 待办 · **${summary.completedTasks}** 已完成 · 🔴 ${summary.blockedTasks}阻塞 · 🟡 ${summary.pendingResponseTasks || 0}催办\n\n`;
 
-  // 嵌入图表图片
+  // 嵌入全部图表图片（暗色专业风格）
   if (chartUrls.deptBarUrl) cardText += `![](${chartUrls.deptBarUrl})\n\n`;
-  else if (chartUrls.healthChartUrl) cardText += `![](${chartUrls.healthChartUrl})\n\n`;
+  if (chartUrls.statusPieUrl) cardText += `![](${chartUrls.statusPieUrl})\n\n`;
+  if (chartUrls.completionRateUrl) cardText += `![](${chartUrls.completionRateUrl})\n\n`;
+  if (chartUrls.healthChartUrl) cardText += `![](${chartUrls.healthChartUrl})\n\n`;
 
   // 异常摘要
   const problems = [];

@@ -119,9 +119,15 @@ class MessageTemplates {
       msg += `> ${name} ${bar} **${pending}**待办 ${completed}完成\n\n`;
     }
 
-    // ━━━ 嵌入图表图片 ━━━
+    // ━━━ 嵌入图表图片（暗色专业风格） ━━━
     if (chartUrls?.deptBarUrl) {
       msg += `\n![部门任务分布](${chartUrls.deptBarUrl})\n\n`;
+    }
+    if (chartUrls?.statusPieUrl) {
+      msg += `![任务状态](${chartUrls.statusPieUrl})\n\n`;
+    }
+    if (chartUrls?.completionRateUrl) {
+      msg += `![完成率排行](${chartUrls.completionRateUrl})\n\n`;
     }
     if (chartUrls?.healthChartUrl) {
       msg += `![异常信号](${chartUrls.healthChartUrl})\n\n`;
