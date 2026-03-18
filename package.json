@@ -1,0 +1,27 @@
+{
+  "name": "dingtalk-task-tracker",
+  "version": "1.0.0",
+  "description": "钉钉待办事项自动化催办与智能预警系统 - AI驱动的部门任务跟踪管理工具",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "scheduler": "node src/scheduler.js",
+    "report": "node src/report-generator.js",
+    "test": "node tests/test.js"
+  },
+  "keywords": ["dingtalk", "task-tracking", "ai", "automation"],
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "node-cron": "^3.0.3",
+    "axios": "^1.7.0",
+    "dayjs": "^1.11.13",
+    "dotenv": "^16.4.7",
+    "winston": "^3.17.0",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
