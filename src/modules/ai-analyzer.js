@@ -12,7 +12,13 @@ const logger = require('../utils/logger');
 
 class AIAnalyzer {
   constructor() {
-    this.client = new Anthropic({ apiKey: config.ai.apiKey });
+    this.aiEnabled = !!config.ai.apiKey;
+    if (this.aiEnabled) {
+      this.client = new Anthropic({ apiKey: config.ai.apiKey });
+    } else {
+      logger.info('未配置 ANTHROPIC_API_KEY，AI分析已禁用，使用规则引擎替代');
+      this.client = null;
+    }
   }
 
   /**
@@ -23,6 +29,10 @@ class AIAnalyzer {
    * @returns {Object} 结构化的任务数据（与 taskParser.parseDocContent 输出格式一致）
    */
   async extractTasksFromRawText(rawText) {
+    if (!this.aiEnabled) {
+      logger.info('AI未启用，跳过智能提取');
+      return null;
+    }
     try {
       const response = await this.client.messages.create({
         model: config.ai.model,
@@ -115,7 +125,7 @@ ${rawText}
       }
     }
 
-    if (allTasks.length <= 1) {
+    if (allTasks.length <= 1 || !this.aiEnabled) {
       return { taskData, duplicates: [] };
     }
 
@@ -173,6 +183,11 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
    * （适配v2的状态体系，不再依赖百分比）
    */
   async analyzeAll(taskData) {
+    if (!this.aiEnabled) {
+      logger.info('AI未启用，使用规则引擎分析');
+      return this._fallbackAnalysis(taskData);
+    }
+
     const prompt = this._buildAnalysisPrompt(taskData);
 
     try {
@@ -363,6 +378,9 @@ ${allTasks.map((t, i) => `${i + 1}. [${t.department}] ${t.title} (${t.owner || '
    * 单独分析某个任务的反馈内容
    */
   async analyzeFeedback(department, taskName, feedbackText) {
+    if (!this.aiEnabled) {
+      return { hasRisk: false, note: 'AI未启用' };
+    }
     try {
       const response = await this.client.messages.create({
         model: config.ai.model,
