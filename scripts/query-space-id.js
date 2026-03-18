@@ -89,30 +89,89 @@ async function main() {
     }
 
     // A2: 知识库列表
-    // A3: 直接读取目标文档节点信息和内容
+    // A3: 读取目标文档内容（多种方式）
     if (docId) {
-      console.log(`\n--- 直接读取目标文档 (nodeId: ${docId}) ---\n`);
+      console.log(`\n--- 读取目标文档 (nodeId: ${docId}) ---\n`);
 
-      // 尝试获取节点信息
+      // 先获取节点信息
+      let nodeInfo = null;
+      try {
+        const res = await axios.get(`${BASE}/v2.0/wiki/nodes/${docId}`, {
+          headers, params: { operatorId },
+        });
+        nodeInfo = res.data.node;
+        console.log(`✅ 文档信息: ${nodeInfo.name} (${nodeInfo.extension})`);
+        console.log(`   workspaceId: ${nodeInfo.workspaceId}, size: ${nodeInfo.size}`);
+      } catch (e) {
+        console.log(`❌ 获取节点信息失败: ${e.response?.data?.message || e.message}`);
+      }
+
+      const wsId = nodeInfo?.workspaceId || '5zaVASy9YqE7Nr8y';
+
+      // 尝试多种读取方式
       const tryApis = [
-        { name: 'wiki/nodes/get', method: 'get', url: `${BASE}/v2.0/wiki/nodes/${docId}`, params: { operatorId } },
-        { name: 'wiki/nodes/body', method: 'get', url: `${BASE}/v2.0/wiki/nodes/${docId}/body`, params: { operatorId } },
-        { name: 'doc/documents/body (v1)', method: 'get', url: `${BASE}/v1.0/doc/documents/${docId}`, params: { operatorId } },
-        { name: 'doc/dentries (v2)', method: 'get', url: `${BASE}/v2.0/doc/dentries/${docId}`, params: { operatorId } },
+        // 1. Storage API - 获取下载信息
+        { name: 'storage/dentries/getDownloadInfo', method: 'post',
+          url: `${BASE}/v1.0/storage/spaces/${wsId}/dentries/${docId}/getDownloadInfo`,
+          data: { unionId: operatorId } },
+        // 2. Storage API - query
+        { name: 'storage/dentries/query', method: 'post',
+          url: `${BASE}/v1.0/storage/spaces/${wsId}/dentries/${docId}/query`,
+          data: { unionId: operatorId } },
+        // 3. Drive API - 下载信息（用 wsId 作为 spaceId, docId 作为 fileId）
+        { name: 'drive/downloadInfos', method: 'get',
+          url: `${BASE}/v1.0/drive/spaces/${wsId}/files/${docId}/downloadInfos`,
+          params: { unionId: operatorId } },
+        // 4. Wiki export
+        { name: 'wiki/nodes/export (markdown)', method: 'post',
+          url: `${BASE}/v2.0/wiki/nodes/${docId}/export`,
+          data: { operatorId, targetFormat: 'markdown' } },
+        // 5. Wiki export (html)
+        { name: 'wiki/nodes/export (html)', method: 'post',
+          url: `${BASE}/v2.0/wiki/nodes/${docId}/export`,
+          data: { operatorId, targetFormat: 'html' } },
+        // 6. Doc API - 获取文档正文
+        { name: 'doc/workspaces/docs/body', method: 'get',
+          url: `${BASE}/v1.0/doc/workspaces/${wsId}/docs/${docId}/body`,
+          params: { operatorId } },
+        // 7. Doc 2.0 API
+        { name: 'doc/v2/documents/body', method: 'get',
+          url: `${BASE}/v2.0/doc/documents/${docId}/body`,
+          params: { operatorId } },
       ];
 
       for (const api of tryApis) {
         try {
-          const res = api.method === 'get'
-            ? await axios.get(api.url, { headers, params: api.params })
-            : await axios.post(api.url, api.params, { headers });
-          console.log(`✅ ${api.name} 成功:`);
+          let res;
+          if (api.method === 'get') {
+            res = await axios.get(api.url, { headers, params: api.params });
+          } else {
+            res = await axios.post(api.url, api.data, { headers });
+          }
+          console.log(`\n✅ ${api.name} 成功!`);
           const data = JSON.stringify(res.data, null, 2);
-          console.log(data.slice(0, 2000));
-          if (data.length > 2000) console.log('  ... (截断)');
+          console.log(data.slice(0, 3000));
+          if (data.length > 3000) console.log('  ... (截断)');
+
+          // 如果获取到下载URL，尝试下载内容
+          const downloadUrl = res.data?.downloadInfo?.resourceUrl || res.data?.resourceUrl || res.data?.url;
+          if (downloadUrl) {
+            console.log(`\n  下载URL: ${downloadUrl.slice(0, 100)}...`);
+            try {
+              const dlRes = await axios.get(downloadUrl, { responseType: 'text', maxRedirects: 5 });
+              const content = typeof dlRes.data === 'string' ? dlRes.data : JSON.stringify(dlRes.data);
+              console.log(`\n  === 文档内容 (前2000字) ===`);
+              console.log(content.slice(0, 2000));
+              if (content.length > 2000) console.log('  ... (截断)');
+            } catch (dlErr) {
+              console.log(`  下载失败: ${dlErr.message}`);
+            }
+          }
           console.log();
         } catch (e) {
-          console.log(`❌ ${api.name}: ${e.response?.status} - ${e.response?.data?.message || e.message}`);
+          const status = e.response?.status || 'N/A';
+          const msg = e.response?.data?.message || e.message;
+          console.log(`❌ ${api.name}: ${status} - ${msg}`);
           if (e.response?.status === 403) {
             const scopes = e.response?.data?.accessdenieddetail?.requiredScopes;
             if (scopes) console.log(`   需要权限: ${scopes.join(', ')}`);
