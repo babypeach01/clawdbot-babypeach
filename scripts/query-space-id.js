@@ -108,36 +108,73 @@ async function main() {
 
       const wsId = nodeInfo?.workspaceId || '5zaVASy9YqE7Nr8y';
 
+      // 先获取用户的数字格式 spaceId（storage API 需要）
+      let numericSpaceId = null;
+      console.log('\n--- 查找数字格式 spaceId ---\n');
+      const spaceApis = [
+        { name: 'storage/spaces (GET)', method: 'get',
+          url: `${BASE}/v1.0/storage/spaces`, params: { unionId: operatorId, spaceType: 0 } },
+        { name: 'storage/mySpace', method: 'get',
+          url: `${BASE}/v1.0/storage/currentUser/spaces/personal`, params: { unionId: operatorId } },
+        { name: 'drive/spaces (personal)', method: 'get',
+          url: `${BASE}/v1.0/drive/spaces`, params: { unionId: operatorId, spaceType: 'personal' } },
+      ];
+      for (const api of spaceApis) {
+        try {
+          const res = await axios.get(api.url, { headers, params: api.params });
+          console.log(`✅ ${api.name}:`, JSON.stringify(res.data).slice(0, 500));
+          // 尝试提取数字 spaceId
+          const spaces = res.data.spaces || res.data.items || [];
+          if (Array.isArray(spaces)) {
+            for (const sp of spaces) {
+              const sid = sp.spaceId || sp.id;
+              if (sid && /^\d+$/.test(String(sid))) {
+                numericSpaceId = String(sid);
+                console.log(`  >>> 数字 spaceId: ${numericSpaceId}`);
+                break;
+              }
+            }
+          }
+          // 单个空间响应
+          const sid = res.data.spaceId || res.data.id;
+          if (sid && /^\d+$/.test(String(sid))) {
+            numericSpaceId = String(sid);
+            console.log(`  >>> 数字 spaceId: ${numericSpaceId}`);
+          }
+        } catch (e) {
+          console.log(`❌ ${api.name}: ${e.response?.status} - ${e.response?.data?.message || e.message}`);
+          if (e.response?.status === 403) {
+            const scopes = e.response?.data?.accessdenieddetail?.requiredScopes;
+            if (scopes) console.log(`   需要权限: ${scopes.join(', ')}`);
+          }
+        }
+      }
+
+      // 使用找到的数字 spaceId 或备用
+      const storageSpaceId = numericSpaceId || wsId;
+      console.log(`\n使用 spaceId: ${storageSpaceId} (${numericSpaceId ? '数字' : 'wiki格式'})\n`);
+
       // 尝试多种读取方式
       const tryApis = [
-        // 1. Storage API - 获取下载信息
-        { name: 'storage/dentries/getDownloadInfo', method: 'post',
-          url: `${BASE}/v1.0/storage/spaces/${wsId}/dentries/${docId}/getDownloadInfo`,
-          data: { unionId: operatorId } },
-        // 2. Storage API - query
-        { name: 'storage/dentries/query', method: 'post',
-          url: `${BASE}/v1.0/storage/spaces/${wsId}/dentries/${docId}/query`,
-          data: { unionId: operatorId } },
-        // 3. Drive API - 下载信息（用 wsId 作为 spaceId, docId 作为 fileId）
-        { name: 'drive/downloadInfos', method: 'get',
+        // 1. Storage API - query（用数字 spaceId）
+        ...(numericSpaceId ? [
+          { name: 'storage/dentries/query (数字spaceId)', method: 'post',
+            url: `${BASE}/v1.0/storage/spaces/${numericSpaceId}/dentries/${docId}/query`,
+            data: { unionId: operatorId } },
+          { name: 'storage/dentries/getDownloadInfo (数字spaceId)', method: 'post',
+            url: `${BASE}/v1.0/storage/spaces/${numericSpaceId}/dentries/${docId}/getDownloadInfo`,
+            data: { unionId: operatorId } },
+        ] : []),
+        // 2. Drive API - 下载信息
+        ...(numericSpaceId ? [
+          { name: 'drive/downloadInfos (数字spaceId)', method: 'get',
+            url: `${BASE}/v1.0/drive/spaces/${numericSpaceId}/files/${docId}/downloadInfos`,
+            params: { unionId: operatorId } },
+        ] : []),
+        // 3. Drive API - 用 wiki spaceId 备选
+        { name: 'drive/downloadInfos (wiki spaceId)', method: 'get',
           url: `${BASE}/v1.0/drive/spaces/${wsId}/files/${docId}/downloadInfos`,
           params: { unionId: operatorId } },
-        // 4. Wiki export
-        { name: 'wiki/nodes/export (markdown)', method: 'post',
-          url: `${BASE}/v2.0/wiki/nodes/${docId}/export`,
-          data: { operatorId, targetFormat: 'markdown' } },
-        // 5. Wiki export (html)
-        { name: 'wiki/nodes/export (html)', method: 'post',
-          url: `${BASE}/v2.0/wiki/nodes/${docId}/export`,
-          data: { operatorId, targetFormat: 'html' } },
-        // 6. Doc API - 获取文档正文
-        { name: 'doc/workspaces/docs/body', method: 'get',
-          url: `${BASE}/v1.0/doc/workspaces/${wsId}/docs/${docId}/body`,
-          params: { operatorId } },
-        // 7. Doc 2.0 API
-        { name: 'doc/v2/documents/body', method: 'get',
-          url: `${BASE}/v2.0/doc/documents/${docId}/body`,
-          params: { operatorId } },
       ];
 
       for (const api of tryApis) {
