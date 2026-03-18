@@ -89,17 +89,47 @@ async function main() {
     }
   }
 
-  // 方式C: 尝试旧版 drive API
-  console.log('\n--- 尝试 Drive API ---\n');
-  try {
-    const res = await axios.get(`${BASE}/v1.0/drive/spaces`, {
-      headers,
-      params: { spaceType: 'org', maxResults: 20 },
-    });
-    console.log('Drive 空间列表:');
-    console.log(JSON.stringify(res.data, null, 2));
-  } catch (e) {
-    console.log('Drive API 失败:', e.response?.data?.message || e.message);
+  // 方式C: Drive API（我的文档）
+  if (operatorId) {
+    console.log('\n--- 尝试 Drive API (我的文档) ---\n');
+
+    // 查个人空间
+    for (const spaceType of ['personal', 'org']) {
+      try {
+        const res = await axios.get(`${BASE}/v1.0/drive/spaces`, {
+          headers,
+          params: { unionId: operatorId, spaceType, maxResults: 20 },
+        });
+        console.log(`Drive 空间 [${spaceType}]:`);
+        const spaces = res.data.spaces || [];
+        if (spaces.length === 0) {
+          console.log('  (空)');
+        }
+        for (const sp of spaces) {
+          console.log(`  - ${sp.spaceName || '未命名'} | spaceId: ${sp.spaceId} | type: ${sp.spaceType}`);
+
+          // 列出空间下的文件
+          try {
+            const filesRes = await axios.get(`${BASE}/v1.0/drive/spaces/${sp.spaceId}/files`, {
+              headers,
+              params: { unionId: operatorId, maxResults: 50 },
+            });
+            const files = filesRes.data.files || [];
+            files.forEach(f => {
+              console.log(`    - ${f.fileName} | fileId: ${f.fileId} | type: ${f.fileType}`);
+              if (f.fileId === docId || f.fileName?.includes('任务')) {
+                console.log(`\n    >>> 可能是目标文档! spaceId: ${sp.spaceId}, fileId: ${f.fileId} <<<\n`);
+              }
+            });
+          } catch (e2) {
+            console.log(`    文件列表失败: ${e2.response?.data?.message || e2.message}`);
+          }
+        }
+        console.log();
+      } catch (e) {
+        console.log(`Drive [${spaceType}] 失败:`, e.response?.data?.message || e.message);
+      }
+    }
   }
 
   // 方式D: 获取管理员用户信息（拿 unionId）
