@@ -144,9 +144,13 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'P
 1. 任务描述 @负责人 ：状态
 已完成
 1. 已完成任务"></textarea>
-      <div style="display:flex;gap:12px;justify-content:center">
-        <button class="btn btn-primary" onclick="submitDoc(false)">解析分析</button>
-        <button class="btn btn-outline" onclick="submitDoc(true)">AI深度提取</button>
+      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="submitDoc('analyze')">解析预览</button>
+        <button class="btn btn-outline" onclick="submitDoc('analyze-ai')">AI深度提取</button>
+        <button class="btn btn-primary" style="background:var(--green)" onclick="submitDoc('process')">一键发送催办</button>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text2)">
+        「解析预览」仅分析不发消息 | 「一键发送催办」分析后自动发送催办+预警到钉钉群
       </div>
       <div id="uploadStatus" style="margin-top:12px;font-size:13px;color:var(--text2)"></div>
     </div>
@@ -196,28 +200,40 @@ async function loadStatus() {
   }
 }
 
-async function submitDoc(useAi) {
+async function submitDoc(mode) {
   const content = document.getElementById('docInput').value.trim();
   if (!content) return alert('请粘贴文档内容');
 
+  if (mode === 'process' && !confirm('确认发送催办消息到钉钉群？')) return;
+
   const statusEl = document.getElementById('uploadStatus');
-  statusEl.textContent = useAi ? 'AI深度分析中，请稍候...' : '解析分析中...';
+  const msgs = { 'analyze': '解析分析中...', 'analyze-ai': 'AI深度分析中，请稍候...', 'process': '正在执行完整催办流程...' };
+  statusEl.textContent = msgs[mode] || '处理中...';
   statusEl.style.color = 'var(--accent)';
 
+  const endpoint = mode === 'process' ? '/api/process' : '/api/analyze';
+  const useAi = mode === 'analyze-ai';
+
   try {
-    const res = await fetch(API + '/api/analyze', {
+    const res = await fetch(API + endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content, useAiExtract: useAi }),
     });
     const data = await res.json();
     if (data.success) {
-      statusEl.textContent = `解析成功！${data.taskData.summary.totalTasks}个任务，${data.taskData.departments.length}个部门`;
+      const taskCount = data.taskData.summary.totalTasks;
+      const deptCount = data.taskData.departments.length;
+      if (mode === 'process') {
+        statusEl.textContent = `催办完成！${taskCount}个任务，${deptCount}个部门，催办消息已发送到钉钉群`;
+      } else {
+        statusEl.textContent = `解析成功！${taskCount}个任务，${deptCount}个部门（仅预览，未发消息）`;
+      }
       statusEl.style.color = 'var(--green)';
       renderDashboard(data.taskData, data.analysisResult);
       switchTab('dashboard');
     } else {
-      statusEl.textContent = '分析失败: ' + (data.error || '未知错误');
+      statusEl.textContent = '处理失败: ' + (data.error || '未知错误');
       statusEl.style.color = 'var(--red)';
     }
   } catch (e) {

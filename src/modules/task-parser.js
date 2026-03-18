@@ -127,8 +127,8 @@ class TaskParser {
     const departments = [];
 
     // 匹配中文数字部门标题：一、二、...十二、或"全体："
-    // Pattern: 行首，中文数字+顿号+部门名 或 全体：
-    const deptPattern = /^(?:([一二三四五六七八九十百]+、)(.+?)|(全体)[：:]\s*(.*)?)$/gm;
+    // Pattern: 行首（可能有 # 号前缀），中文数字+顿号+部门名 或 全体：
+    const deptPattern = /^(?:#\s*)?(?:([一二三四五六七八九十百]+、)(.+?)|(全体)[：:]\s*(.*)?)$/gm;
 
     const matches = [];
     let match;

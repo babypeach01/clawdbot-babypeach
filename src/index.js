@@ -20,10 +20,12 @@ const aiAnalyzer = require('./modules/ai-analyzer');
 const reminderEngine = require('./modules/reminder-engine');
 const reportGenerator = require('./modules/report-generator');
 const dataStore = require('./modules/data-store');
+const dingtalk = require('./modules/dingtalk-client');
 const logger = require('./utils/logger');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // ============================================
@@ -145,13 +147,14 @@ app.post('/api/process', async (req, res) => {
 
     // 报告
     const dashboard = await reportGenerator.generateDailyDashboard(taskData, analysisResult);
+    await dingtalk.sendRobotMessage('每日看板', dashboard);
 
     // 保存
     dataStore.saveLatestTasks(taskData);
     dataStore.saveAnalysis(dayjs().format('YYYY-MM-DD'), analysisResult);
     reportGenerator.saveSnapshot(taskData, analysisResult);
 
-    res.json({ success: true, changes, duplicates, analysisResult, dashboard });
+    res.json({ success: true, taskData, changes, duplicates, analysisResult, dashboard });
   } catch (err) {
     logger.error(`处理接口错误: ${err.message}`);
     res.status(500).json({ error: err.message });
