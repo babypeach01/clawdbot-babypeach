@@ -1,14 +1,15 @@
 /**
- * 消息模板引擎（v3 - 图表为主，文字精简）
+ * 消息模板引擎（v4 - 图表图片嵌入，文字极简）
  *
  * 4种消息类型：
  * 1. morningBrief  - 晨报焦点（半屏，只看异常）
- * 2. dashboard     - 部门看板（一屏图表）
+ * 2. dashboard     - 部门看板（图片图表 + 一行摘要）
  * 3. urgentAlert   - 单项催办（独立消息，5行以内）
- * 4. weeklyReview  - 周五回顾
+ * 4. weeklyReview  - 周五回顾（图表 + 精简总结）
  */
 const dayjs = require('dayjs');
 const logger = require('../utils/logger');
+const chartGenerator = require('./chart-generator');
 
 class MessageTemplates {
   /**
@@ -97,62 +98,56 @@ class MessageTemplates {
 
   /**
    * ═══════════════════════════════════════
-   *  部门看板 - 图表为主（一屏，5秒扫完）
+   *  部门看板 - 图表图片为主（一屏，3秒扫完）
    * ═══════════════════════════════════════
    */
   generateDashboard(taskData, changes) {
     const today = dayjs();
     const dateStr = today.format('M/D');
     const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.day()];
+    const { summary } = taskData;
+
+    // 生成图表 URL
+    const barChartUrl = chartGenerator.deptBarChart(taskData.departments);
+    const doughnutUrl = chartGenerator.statusDoughnut(summary);
 
     let msg = `## 📊 ${dateStr} ${weekday} · 部门工作看板\n\n`;
 
-    // 部门表格 - 图表化
-    msg += `| 部门 | 待办 | 工作量 | 关注 |\n`;
-    msg += `|:-----|:----:|:-------|:----:|\n`;
+    // 数字摘要（一行）
+    const totalPending = summary.totalTasks - summary.completedTasks;
+    msg += `**${totalPending}** 待办 · **${summary.completedTasks}** 已完成 · `;
+    msg += `🔴 ${summary.blockedTasks}阻塞 · 🟡 ${summary.pendingResponseTasks || 0}催办\n\n`;
 
-    const maxTasks = Math.max(...taskData.departments.map(d => d.pendingCount || 0), 1);
+    // 嵌入图表图片
+    msg += `![部门任务分布](${barChartUrl})\n\n`;
+    msg += `![任务状态总览](${doughnutUrl})\n\n`;
 
+    // 异常部门标记（只列有问题的，最多3个）
+    const problemDepts = [];
     for (const dept of taskData.departments) {
-      if (dept.pendingCount === 0 && dept.completedCount === 0) continue;
-
-      const name = this._shortDept(dept.department);
-      const pending = dept.pendingCount || 0;
-      const barLen = Math.max(1, Math.round(pending / maxTasks * 10));
-      const bar = '▓'.repeat(barLen) + '░'.repeat(10 - barLen);
-
-      // 统计异常
       const blockedCount = dept.tasks.filter(t => t.statusKey === 'blocked').length;
-      const urgentCount = dept.tasks.filter(t => t.statusKey === 'pending_response').length;
       const overdueCount = dept.tasks.filter(t => {
         if (t.isCompleted || !t.deadline) return false;
         return dayjs(t.deadline).isBefore(today, 'day');
       }).length;
-
-      let attention = '';
-      if (blockedCount > 0 || overdueCount > 0) attention += `🔴${blockedCount + overdueCount}`;
-      else if (urgentCount > 0) attention += `🟡${urgentCount}`;
-      else attention = '✅';
-
-      msg += `| ${name} | ${pending} | ${bar} | ${attention} |\n`;
+      if (blockedCount > 0 || overdueCount > 0) {
+        problemDepts.push({ name: this._shortDept(dept.department), blocked: blockedCount, overdue: overdueCount });
+      }
     }
 
-    msg += `\n`;
-
-    // 图例
-    msg += `> ✅正常 · 🟡催办中 · 🔴阻塞/逾期\n\n`;
-
-    // 今日动态
-    if (changes && changes.length > 0) {
-      const completed = changes.filter(c => c.to === '已完成').length;
-      const newTasks = changes.filter(c => c.type === 'new_task').length;
-      const unblocked = changes.filter(c => c.from === '阻塞' && c.to !== '阻塞').length;
-      msg += `**今日动态** +${completed}完成 · +${newTasks}新增 · ${unblocked}解除阻塞\n`;
+    if (problemDepts.length > 0) {
+      msg += `**⚠️ 需关注**\n\n`;
+      for (const d of problemDepts.slice(0, 3)) {
+        const issues = [];
+        if (d.blocked > 0) issues.push(`${d.blocked}项阻塞`);
+        if (d.overdue > 0) issues.push(`${d.overdue}项逾期`);
+        msg += `· ${d.name}: ${issues.join('、')}\n\n`;
+      }
     }
 
-    msg += `\n---\n\n*🤖 ${today.format('HH:mm')} 自动生成*`;
+    msg += `---\n\n*🤖 ${today.format('HH:mm')} 自动生成*`;
 
-    return { title: `${dateStr} 部门看板`, text: msg };
+    return { title: `${dateStr} 部门看板`, text: msg, chartUrls: { barChartUrl, doughnutUrl } };
   }
 
   /**
@@ -226,38 +221,28 @@ class MessageTemplates {
     const weekStart = today.subtract(4, 'day').format('M/D');
     const weekEnd = today.format('M/D');
 
+    // 图表
+    const barChartUrl = chartGenerator.deptBarChart(taskData.departments);
+    const personUrl = chartGenerator.personLoadChart(taskData.departments);
+
     let msg = `## 📅 本周回顾 ${weekStart}-${weekEnd}\n\n`;
 
-    // 本周成果（如果有快照对比）
+    // 本周成果
     if (weekSnapshots && weekSnapshots.length >= 2) {
       const first = weekSnapshots[0];
       const last = weekSnapshots[weekSnapshots.length - 1];
-      const firstTotal = first.taskData?.summary?.totalTasks || 0;
-      const lastTotal = last.taskData?.summary?.totalTasks || 0;
-      const firstCompleted = first.taskData?.summary?.completedTasks || 0;
-      const lastCompleted = last.taskData?.summary?.completedTasks || 0;
-
-      const newCompleted = lastCompleted - firstCompleted;
-      const newTasks = lastTotal - firstTotal;
-
-      msg += `**本周成果**\n\n`;
-      msg += `✅ 新增完成 ${Math.max(0, newCompleted)}项`;
-      if (newTasks > 0) msg += ` | 🆕 新增任务 ${newTasks}项`;
+      const newCompleted = (last.taskData?.summary?.completedTasks || 0) - (first.taskData?.summary?.completedTasks || 0);
+      const newTasks = (last.taskData?.summary?.totalTasks || 0) - (first.taskData?.summary?.totalTasks || 0);
+      msg += `✅ +${Math.max(0, newCompleted)}完成`;
+      if (newTasks > 0) msg += ` · 🆕 +${newTasks}新增`;
       msg += `\n\n`;
     }
 
-    // 部门活跃度（用星星表示）
-    msg += `**部门工作量**\n\n`;
-    const sorted = [...taskData.departments]
-      .filter(d => d.pendingCount > 0)
-      .sort((a, b) => b.pendingCount - a.pendingCount);
+    // 图表
+    msg += `![部门任务分布](${barChartUrl})\n\n`;
+    msg += `![个人任务负荷](${personUrl})\n\n`;
 
-    for (const dept of sorted) {
-      const stars = '⭐'.repeat(Math.min(Math.ceil(dept.pendingCount / 10), 5));
-      msg += `${this._shortDept(dept.department)} ${stars} ${dept.pendingCount}项\n\n`;
-    }
-
-    // 持续未动项（blocked / 催办中）
+    // 持续未动（最多5条）
     const stuckItems = [];
     for (const dept of taskData.departments) {
       for (const t of dept.tasks) {
@@ -266,18 +251,17 @@ class MessageTemplates {
           stuckItems.push({
             title: this._truncate(t.title, 25),
             owner: t.owner || dept.owner,
-            status: t.status,
           });
         }
       }
     }
 
     if (stuckItems.length > 0) {
-      msg += `**⚠️ 待推动事项**\n\n`;
-      for (const item of stuckItems.slice(0, 8)) {
-        msg += `· ${item.title} → ${item.owner}（${item.status}）\n\n`;
+      msg += `**⚠️ 待推动 ${stuckItems.length}项**\n\n`;
+      for (const item of stuckItems.slice(0, 5)) {
+        msg += `· ${item.title} → ${item.owner}\n\n`;
       }
-      if (stuckItems.length > 8) msg += `· ...还有${stuckItems.length - 8}项\n\n`;
+      if (stuckItems.length > 5) msg += `· ...还有${stuckItems.length - 5}项\n\n`;
     }
 
     msg += `---\n\n*🤖 周报自动生成 ${today.format('HH:mm')}*`;
