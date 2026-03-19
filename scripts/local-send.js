@@ -10,7 +10,8 @@
  *   node scripts/local-send.js --detail           # 只发 [3/5] 事项明细表
  *   node scripts/local-send.js --urgent           # 只发 [4/5] 催办提醒（逐条）
  *   node scripts/local-send.js --weekly           # 只发 [5/5] 周五回顾
- *   node scripts/local-send.js --card              # 发送钉钉互动卡片（原生嵌入式）
+ *   node scripts/local-send.js --summary           # ⭐ 日报总结（3条：卡片+部门进展+异常预警）
+ *   node scripts/local-send.js --card              # 单独发送互动卡片
  *   node scripts/local-send.js --card morning      # 互动卡片-晨报焦点
  *   node scripts/local-send.js --card weekly        # 互动卡片-周回顾
  *   node scripts/local-send.js --test             # 发送测试消息（验证连通性）
@@ -201,12 +202,6 @@ async function sendDashboard(taskData, dryRun) {
   let cardText = `## 📊 ${dateStr} ${weekday} · 部门工作看板\n\n`;
   cardText += `**${totalPending}** 待办 · **${summary.completedTasks}** 已完成 · 🔴 ${summary.blockedTasks}阻塞 · 🟡 ${summary.pendingResponseTasks || 0}催办\n\n`;
 
-  // 嵌入全部图表图片（暗色专业风格）
-  if (chartUrls.deptBarUrl) cardText += `![](${chartUrls.deptBarUrl})\n\n`;
-  if (chartUrls.statusPieUrl) cardText += `![](${chartUrls.statusPieUrl})\n\n`;
-  if (chartUrls.completionRateUrl) cardText += `![](${chartUrls.completionRateUrl})\n\n`;
-  if (chartUrls.healthChartUrl) cardText += `![](${chartUrls.healthChartUrl})\n\n`;
-
   // 异常摘要
   const problems = [];
   for (const dept of taskData.departments) {
@@ -375,7 +370,87 @@ async function _buildDashboardForPreview(taskData, dryRun) {
 }
 
 /**
- * 发送钉钉互动卡片（原生嵌入式卡片，含图表）
+ * 发送日报总结（3条消息组合）
+ *   第1条：互动卡片 — KPI + 原生图表
+ *   第2条：Markdown — 部门进展摘要
+ *   第3条：Markdown — 异常预警（仅有异常时发）
+ */
+async function sendDailySummary(taskData, dryRun) {
+  console.log('\n📋 日报总结（3条消息组合）');
+  console.log('═'.repeat(50));
+
+  let sent = 0;
+
+  // ━━━ 第1条：互动卡片 ━━━
+  console.log('\n  [1/3] 互动卡片 — KPI概览 + 图表');
+  console.log('  ' + '─'.repeat(40));
+
+  const cardTemplateId = config.dingtalk.cardTemplateId;
+  if (!cardTemplateId) {
+    console.error('  ✗ 未配置 DINGTALK_CARD_TEMPLATE_ID');
+  } else {
+    const cardData = messageTemplates.generateCardData(taskData, 'dashboard');
+    const cardParamMap = {
+      title: cardData.title,
+      completionRate: cardData.completionRate,
+      pendingCount: cardData.pendingCount,
+      completedCount: cardData.completedCount,
+      chartData: JSON.stringify(cardData.chartData),
+      alerts: cardData.alerts,
+    };
+    console.log(`  标题: ${cardData.title}`);
+    console.log(`  完成率: ${cardData.completionRate} | 待办: ${cardData.pendingCount} | 已完成: ${cardData.completedCount}`);
+
+    if (!dryRun) {
+      const outTrackId = `clawdbot-summary-${Date.now()}`;
+      const options = {};
+      if (config.dingtalk.openConversationId) {
+        options.openConversationId = config.dingtalk.openConversationId;
+      }
+      const result = await dingtalkClient.sendInteractiveCard(cardTemplateId, outTrackId, cardParamMap, options);
+      if (result.success) { console.log('  ✓ 卡片发送成功'); sent++; }
+      else { console.error(`  ✗ 卡片失败: ${result.error}`); }
+      await sleep(2000);
+    } else {
+      console.log('  cardParamMap:', JSON.stringify(cardParamMap, null, 2));
+      sent++;
+    }
+  }
+
+  // ━━━ 第2条：部门进展 ━━━
+  console.log('\n  [2/3] 部门进展摘要');
+  console.log('  ' + '─'.repeat(40));
+
+  const deptMsg = messageTemplates.generateDeptProgress(taskData);
+  console.log(deptMsg.text.slice(0, 400));
+
+  if (!dryRun) {
+    if (await sendDingTalk(deptMsg.title, deptMsg.text)) sent++;
+    await sleep(2000);
+  } else { sent++; }
+
+  // ━━━ 第3条：异常预警 ━━━
+  console.log('\n  [3/3] 异常预警');
+  console.log('  ' + '─'.repeat(40));
+
+  const alertMsg = messageTemplates.generateAlertSummary(taskData);
+  if (alertMsg) {
+    console.log(alertMsg.text.slice(0, 400));
+    if (!dryRun) {
+      if (await sendDingTalk(alertMsg.title, alertMsg.text)) sent++;
+    } else { sent++; }
+  } else {
+    console.log('  ✅ 无异常，跳过第3条');
+    sent++;
+  }
+
+  console.log('\n' + '═'.repeat(50));
+  console.log(`  日报总结发送完成: ${sent}/3`);
+  return sent > 0;
+}
+
+/**
+ * 发送钉钉互动卡片（单独发送，原生嵌入式卡片）
  */
 async function sendInteractiveCard(taskData, cardType, dryRun) {
   console.log(`\n🎴 互动卡片（${cardType}）`);
@@ -387,42 +462,7 @@ async function sendInteractiveCard(taskData, cardType, dryRun) {
     return false;
   }
 
-  // 1. 生成图表并上传OSS
-  let chartUrls = {};
-  if (cardType === 'dashboard' || cardType === 'weekly') {
-    console.log('  生成图表中...');
-    try {
-      chartUrls = await chartGenerator.generateAll(taskData);
-      const count = Object.keys(chartUrls).filter(k => chartUrls[k]).length;
-      console.log(`  ✓ ${count}张图表已生成并上传OSS`);
-    } catch (e) {
-      console.log(`  ⚠ 图表生成失败: ${e.message}（将发送纯文字卡片）`);
-    }
-  }
-
-  // 2. 生成卡片数据（含图表数据）
-  const cardData = messageTemplates.generateCardData(taskData, cardType, chartUrls);
-  console.log(`  标题: ${cardData.title}`);
-  console.log(`  完成率: ${cardData.completionRate}`);
-  console.log(`  待办: ${cardData.pendingCount} / 已完成: ${cardData.completedCount}`);
-  console.log(`  图表数据点: ${cardData.chartData.data.length}`);
-  console.log(`  预警: ${cardData.alerts.slice(0, 200)}`);
-  console.log('─'.repeat(40));
-
-  if (dryRun) {
-    console.log('  (预览模式，不实际发送)');
-    console.log('  cardParamMap:', JSON.stringify({
-      title: cardData.title,
-      completionRate: cardData.completionRate,
-      pendingCount: cardData.pendingCount,
-      completedCount: cardData.completedCount,
-      chartData: cardData.chartData,
-      alerts: cardData.alerts,
-    }, null, 2));
-    return true;
-  }
-
-  // cardParamMap: chartData 需要 JSON 序列化为字符串
+  const cardData = messageTemplates.generateCardData(taskData, cardType);
   const cardParamMap = {
     title: cardData.title,
     completionRate: cardData.completionRate,
@@ -432,27 +472,29 @@ async function sendInteractiveCard(taskData, cardType, dryRun) {
     alerts: cardData.alerts,
   };
 
+  console.log(`  标题: ${cardData.title}`);
+  console.log(`  完成率: ${cardData.completionRate} | 待办: ${cardData.pendingCount} | 已完成: ${cardData.completedCount}`);
+  console.log('─'.repeat(40));
+
+  if (dryRun) {
+    console.log('  (预览模式)');
+    console.log('  cardParamMap:', JSON.stringify(cardParamMap, null, 2));
+    return true;
+  }
+
   const outTrackId = `clawdbot-${cardType}-${Date.now()}`;
   const options = {};
-
   if (config.dingtalk.openConversationId) {
     options.openConversationId = config.dingtalk.openConversationId;
   }
 
-  const result = await dingtalkClient.sendInteractiveCard(
-    cardTemplateId,
-    outTrackId,
-    cardParamMap,
-    options
-  );
+  const result = await dingtalkClient.sendInteractiveCard(cardTemplateId, outTrackId, cardParamMap, options);
 
   if (result.success) {
     console.log('  ✓ 互动卡片发送成功!');
-    console.log(`  outTrackId: ${outTrackId}`);
-    if (result.result) console.log(`  返回数据: ${JSON.stringify(result.result)}`);
   } else {
-    console.error(`  ✗ 互动卡片发送失败: ${result.error}`);
-    if (result.detail) console.error(`  详细错误: ${JSON.stringify(result.detail, null, 2)}`);
+    console.error(`  ✗ 发送失败: ${result.error}`);
+    if (result.detail) console.error(`  详细: ${JSON.stringify(result.detail, null, 2)}`);
   }
   return result.success;
 }
@@ -472,8 +514,9 @@ async function main() {
   const sendUrg = args.includes('--urgent');
   const sendWeek = args.includes('--weekly');
   const sendCard = args.includes('--card');
+  const sendSummary = args.includes('--summary');
   const previewAll = args.includes('--preview-all');
-  const sendAll = !sendMorning && !sendDash && !sendDetail && !sendUrg && !sendWeek && !sendCard && !previewAll;
+  const sendAll = !sendMorning && !sendDash && !sendDetail && !sendUrg && !sendWeek && !sendCard && !sendSummary && !previewAll;
 
   console.log('========================================');
   console.log('  ClawdBot 催办发送工具 v3');
@@ -626,6 +669,11 @@ async function main() {
   if (sendWeek) {
     totalCount++;
     if (await sendWeeklyReview(taskData, dryRun)) successCount++;
+  }
+
+  if (sendSummary) {
+    totalCount++;
+    if (await sendDailySummary(taskData, dryRun)) successCount++;
   }
 
   if (sendCard) {

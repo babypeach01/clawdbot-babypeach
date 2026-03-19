@@ -1,12 +1,16 @@
 /**
- * 消息模板引擎（v5 - 钉钉原生嵌入式可滚动风格）
+ * 消息模板引擎（v6 - 总结汇报导向）
  *
- * 5种消息类型：
- * 1. morningBrief    - 晨报焦点（半屏，只看异常）
- * 2. dashboard       - 部门看板 ActionCard（原生表格风格，可滚动）
- * 3. urgentAlert     - 单项催办（独立消息，5行以内）
- * 4. weeklyReview    - 周五回顾（图表 + 精简总结）
- * 5. detailTable     - 事项明细表（原生滚动长列表）
+ * 核心模式：日报总结（3条消息组合）
+ *   第1条：互动卡片 — KPI概览 + 原生图表（部门待办分布）
+ *   第2条：Markdown — 部门进展摘要（各部门完成情况）
+ *   第3条：Markdown — 异常预警（仅有异常时发）
+ *
+ * 其他消息类型：
+ *   morningBrief    - 晨报焦点（半屏，只看异常）
+ *   urgentAlert     - 单项催办（独立消息）
+ *   weeklyReview    - 周五回顾
+ *   detailTable     - 事项明细表
  */
 const dayjs = require('dayjs');
 const logger = require('../utils/logger');
@@ -79,99 +83,60 @@ class MessageTemplates {
 
   /**
    * ═══════════════════════════════════════
-   *  部门看板 - 钉钉原生嵌入式可滚动 ActionCard
-   *  （文字模拟表格 + 进度条 + 分部门明细）
+   *  第2条：部门进展摘要（Markdown，简洁总结）
+   *  每个部门一行：部门名 + 完成率 + 待办/完成数
    * ═══════════════════════════════════════
    */
-  generateDashboard(taskData, chartUrls) {
+  generateDeptProgress(taskData) {
     const today = dayjs();
     const dateStr = today.format('M/D');
     const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.day()];
-    const { summary, departments } = taskData;
-    const totalPending = summary.totalTasks - summary.completedTasks;
+    const { departments } = taskData;
 
-    let msg = `## 📊 ${dateStr} ${weekday} · 部门工作看板\n\n`;
-
-    // ━━━ KPI 指标卡 ━━━
-    msg += `### 📋 全局概览\n\n`;
-    msg += `> **${summary.totalTasks}** 总事项 ┃ `;
-    msg += `**${totalPending}** 待办 ┃ `;
-    msg += `**${summary.completedTasks}** 已完成\n\n`;
-    msg += `> 🔵推进中 **${summary.inProgressTasks}** ┃ `;
-    msg += `🟡催办中 **${summary.pendingResponseTasks || 0}** ┃ `;
-    msg += `🔴阻塞 **${summary.blockedTasks}** ┃ `;
-    msg += `⏸暂缓 **${summary.onHoldTasks || 0}**\n\n`;
-
-    // ━━━ 部门排行（条形图模拟） ━━━
-    msg += `---\n\n### 📊 部门任务排行\n\n`;
     const deptSorted = [...departments]
       .filter(d => (d.pendingCount || 0) + (d.completedCount || 0) > 0)
       .sort((a, b) => (b.pendingCount || 0) - (a.pendingCount || 0));
 
-    const maxPending = Math.max(...deptSorted.map(d => d.pendingCount || 0), 1);
+    let msg = `## 📁 ${dateStr} ${weekday} · 部门进展\n\n`;
 
     for (const dept of deptSorted) {
-      const name = this._shortDept(dept.department).padEnd(4, '　');
-      const pending = dept.pendingCount || 0;
-      const completed = dept.completedCount || 0;
-      const barLen = Math.round((pending / maxPending) * 8);
-      const bar = '🟥'.repeat(barLen) + '⬜'.repeat(Math.max(0, 8 - barLen));
-      msg += `> ${name} ${bar} **${pending}**待办 ${completed}完成\n\n`;
-    }
-
-    // ━━━ 嵌入图表图片（暗色专业风格） ━━━
-    if (chartUrls?.deptBarUrl) {
-      msg += `\n![部门任务分布](${chartUrls.deptBarUrl})\n\n`;
-    }
-    if (chartUrls?.statusPieUrl) {
-      msg += `![任务状态](${chartUrls.statusPieUrl})\n\n`;
-    }
-    if (chartUrls?.completionRateUrl) {
-      msg += `![完成率排行](${chartUrls.completionRateUrl})\n\n`;
-    }
-    if (chartUrls?.healthChartUrl) {
-      msg += `![异常信号](${chartUrls.healthChartUrl})\n\n`;
-    }
-
-    // ━━━ 异常事项明细（原生表格风格） ━━━
-    const alerts = this._collectAlerts(departments, today);
-    if (alerts.length > 0) {
-      msg += `---\n\n### ⚠️ 异常事项 (${alerts.length})\n\n`;
-      for (const a of alerts.slice(0, 8)) {
-        msg += `> ${a.icon} **${a.type}** ┃ ${a.dept} ┃ ${a.title}\n`;
-        msg += `> 　　　负责人: ${a.owner}${a.extra ? ' · ' + a.extra : ''}\n\n`;
-      }
-      if (alerts.length > 8) {
-        msg += `> ...还有 ${alerts.length - 8} 项异常\n\n`;
-      }
-    }
-
-    // ━━━ 各部门进展摘要 ━━━
-    msg += `---\n\n### 📁 各部门进展\n\n`;
-    for (const dept of deptSorted.slice(0, 8)) {
       const pending = dept.pendingCount || 0;
       const completed = dept.completedCount || 0;
       const total = pending + completed;
       const rate = total > 0 ? Math.round((completed / total) * 100) : 0;
       const statusIcon = rate >= 50 ? '🟢' : rate >= 20 ? '🟡' : '🔴';
-      msg += `> ${statusIcon} **${this._shortDept(dept.department)}** ┃ 完成率${rate}% ┃ ${pending}待办/${completed}完成\n\n`;
-
-      // 列出该部门的阻塞/逾期事项（最多2条）
-      const deptAlerts = (dept.tasks || []).filter(t => !t.isCompleted && (t.statusKey === 'blocked' || (t.deadline && dayjs(t.deadline).isBefore(today, 'day')))).slice(0, 2);
-      for (const t of deptAlerts) {
-        const owner = t.owner || dept.owner || '';
-        if (t.statusKey === 'blocked') {
-          msg += `> 　🚫 ${this._truncate(t.title, 20)} → ${owner}\n\n`;
-        } else {
-          const days = today.diff(dayjs(t.deadline), 'day');
-          msg += `> 　⏰ ${this._truncate(t.title, 20)}（逾期${days}天）→ ${owner}\n\n`;
-        }
-      }
+      msg += `> ${statusIcon} **${this._shortDept(dept.department)}** 完成${rate}% ┃ ${pending}待办 ${completed}完成\n\n`;
     }
 
-    msg += `---\n\n*🤖 AI 智能任务跟踪系统 · ${today.format('HH:mm')} 自动生成*`;
+    msg += `---\n\n*${today.format('HH:mm')} 自动汇总*`;
+    return { title: `${dateStr} 部门进展`, text: msg };
+  }
 
-    return { title: `${dateStr} 部门看板`, text: msg };
+  /**
+   * ═══════════════════════════════════════
+   *  第3条：异常预警（Markdown，仅有异常时发送）
+   *  逾期 + 阻塞 + 催办事项列表
+   * ═══════════════════════════════════════
+   */
+  generateAlertSummary(taskData) {
+    const today = dayjs();
+    const dateStr = today.format('M/D');
+    const { departments } = taskData;
+
+    const alerts = this._collectAlerts(departments, today);
+    if (alerts.length === 0) return null; // 无异常则不发
+
+    let msg = `## ⚠️ ${dateStr} 异常预警（${alerts.length}项）\n\n`;
+
+    for (const a of alerts.slice(0, 10)) {
+      msg += `> ${a.icon} **${a.type}** ┃ ${a.dept} ┃ ${this._truncate(a.title, 20)} → ${a.owner}\n\n`;
+    }
+    if (alerts.length > 10) {
+      msg += `> ...还有 ${alerts.length - 10} 项\n\n`;
+    }
+
+    msg += `---\n\n*请相关负责人跟进处理*`;
+    return { title: `${dateStr} 异常预警`, text: msg };
   }
 
   /**
@@ -315,10 +280,6 @@ class MessageTemplates {
       const bar = '🟩'.repeat(barLen) + '⬜'.repeat(Math.max(0, 8 - barLen));
       msg += `> ${medal} ${d.name} ${bar} **${d.rate}%** (${d.completed}/${d.completed + d.pending})\n\n`;
     }
-
-    // 嵌入图表
-    if (chartUrls?.deptBarUrl) msg += `![部门任务分布](${chartUrls.deptBarUrl})\n\n`;
-    if (chartUrls?.statusPieUrl) msg += `![任务状态总览](${chartUrls.statusPieUrl})\n\n`;
 
     // 持续未动
     const stuckItems = [];
