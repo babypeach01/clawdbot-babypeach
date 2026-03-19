@@ -400,17 +400,37 @@ async function sendInteractiveCard(taskData, cardType, dryRun) {
     }
   }
 
-  // 2. 生成卡片数据（含图表URL）
+  // 2. 生成卡片数据（含图表数据）
   const cardData = messageTemplates.generateCardData(taskData, cardType, chartUrls);
   console.log(`  标题: ${cardData.title}`);
-  console.log(`  内容预览:\n${cardData.content.slice(0, 600)}`);
-  if (cardData.content.length > 600) console.log('  ...(省略)');
+  console.log(`  完成率: ${cardData.completionRate}`);
+  console.log(`  待办: ${cardData.pendingCount} / 已完成: ${cardData.completedCount}`);
+  console.log(`  图表数据点: ${cardData.chartData.data.length}`);
+  console.log(`  预警: ${cardData.alerts.slice(0, 200)}`);
   console.log('─'.repeat(40));
 
   if (dryRun) {
     console.log('  (预览模式，不实际发送)');
+    console.log('  cardParamMap:', JSON.stringify({
+      title: cardData.title,
+      completionRate: cardData.completionRate,
+      pendingCount: cardData.pendingCount,
+      completedCount: cardData.completedCount,
+      chartData: cardData.chartData,
+      alerts: cardData.alerts,
+    }, null, 2));
     return true;
   }
+
+  // cardParamMap: chartData 需要 JSON 序列化为字符串
+  const cardParamMap = {
+    title: cardData.title,
+    completionRate: cardData.completionRate,
+    pendingCount: cardData.pendingCount,
+    completedCount: cardData.completedCount,
+    chartData: JSON.stringify(cardData.chartData),
+    alerts: cardData.alerts,
+  };
 
   const outTrackId = `clawdbot-${cardType}-${Date.now()}`;
   const options = {};
@@ -422,7 +442,7 @@ async function sendInteractiveCard(taskData, cardType, dryRun) {
   const result = await dingtalkClient.sendInteractiveCard(
     cardTemplateId,
     outTrackId,
-    cardData,
+    cardParamMap,
     options
   );
 
