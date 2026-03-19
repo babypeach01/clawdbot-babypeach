@@ -375,7 +375,7 @@ async function _buildDashboardForPreview(taskData, dryRun) {
 }
 
 /**
- * 发送钉钉互动卡片（原生嵌入式卡片）
+ * 发送钉钉互动卡片（原生嵌入式卡片，含图表）
  */
 async function sendInteractiveCard(taskData, cardType, dryRun) {
   console.log(`\n🎴 互动卡片（${cardType}）`);
@@ -387,9 +387,24 @@ async function sendInteractiveCard(taskData, cardType, dryRun) {
     return false;
   }
 
-  const cardData = messageTemplates.generateCardData(taskData, cardType);
+  // 1. 生成图表并上传OSS
+  let chartUrls = {};
+  if (cardType === 'dashboard' || cardType === 'weekly') {
+    console.log('  生成图表中...');
+    try {
+      chartUrls = await chartGenerator.generateAll(taskData);
+      const count = Object.keys(chartUrls).filter(k => chartUrls[k]).length;
+      console.log(`  ✓ ${count}张图表已生成并上传OSS`);
+    } catch (e) {
+      console.log(`  ⚠ 图表生成失败: ${e.message}（将发送纯文字卡片）`);
+    }
+  }
+
+  // 2. 生成卡片数据（含图表URL）
+  const cardData = messageTemplates.generateCardData(taskData, cardType, chartUrls);
   console.log(`  标题: ${cardData.title}`);
-  console.log(`  内容预览:\n${cardData.content.slice(0, 500)}`);
+  console.log(`  内容预览:\n${cardData.content.slice(0, 600)}`);
+  if (cardData.content.length > 600) console.log('  ...(省略)');
   console.log('─'.repeat(40));
 
   if (dryRun) {
