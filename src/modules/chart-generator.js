@@ -1,8 +1,8 @@
 /**
- * 高品质图表生成器（v3 - 暗色专业主题，匹配驾驶舱风格）
+ * 高品质图表生成器（v4 - 浅色简约精致主题）
  *
- * 深色背景 + 渐变色 + 圆角 + 阴影 + 精致字体
- * 嵌入钉钉消息后与暗色看板视觉统一
+ * 白底 + 低饱和色 + 精致排版 + 轻量网格
+ * 风格：苹果/无印良品式极简，拒绝花哨
  */
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
 const dayjs = require('dayjs');
@@ -14,43 +14,46 @@ const WIDTH = 900;
 const HEIGHT = 520;
 const COMPACT_HEIGHT = 440;
 
-// ━━━ 暗色主题配色 ━━━
-const DARK = {
-  bg: '#0f172a',           // 深蓝黑背景
-  cardBg: '#1e293b',       // 卡片背景
-  text: '#e2e8f0',         // 主文字
-  subtext: '#94a3b8',      // 次文字
-  grid: 'rgba(148,163,184,0.08)', // 网格线
-  border: 'rgba(148,163,184,0.12)',
+// ━━━ 浅色简约配色 ━━━
+const LIGHT = {
+  bg: '#ffffff',
+  cardBg: '#f8f9fa',
+  text: '#1a1a2e',           // 主文字 - 深色但不纯黑
+  subtext: '#8e8e93',        // 次文字 - iOS灰
+  grid: 'rgba(0,0,0,0.04)',  // 极淡网格线
+  border: 'rgba(0,0,0,0.06)',
+  titleColor: '#1a1a2e',
+  labelColor: '#3a3a4a',
+  legendColor: '#6e6e7e',
 
-  // 功能色
-  blue: '#3b82f6',
-  cyan: '#06b6d4',
-  green: '#10b981',
-  emerald: '#34d399',
-  red: '#ef4444',
-  rose: '#f43f5e',
-  orange: '#f97316',
-  amber: '#f59e0b',
-  purple: '#8b5cf6',
-  violet: '#a78bfa',
-  pink: '#ec4899',
-  gray: '#64748b',
+  // 功能色 - 低饱和、柔和
+  blue: '#5B8DEF',
+  teal: '#5AC8C8',
+  green: '#5BBD72',
+  mint: '#7ED6A8',
+  red: '#E8676B',
+  coral: '#F09A7E',
+  orange: '#F0A551',
+  amber: '#E8C94A',
+  purple: '#9B8FD9',
+  lavender: '#B8A9E8',
+  pink: '#E88CB4',
+  gray: '#A0A4B0',
 
-  // 渐变色序列（部门用）
+  // 部门色序列 - 柔和渐进色
   deptColors: [
-    '#3b82f6', '#06b6d4', '#8b5cf6', '#ec4899',
-    '#f97316', '#10b981', '#f59e0b', '#ef4444',
-    '#a78bfa', '#64748b', '#34d399', '#f43f5e',
+    '#5B8DEF', '#5AC8C8', '#9B8FD9', '#E88CB4',
+    '#F0A551', '#5BBD72', '#E8C94A', '#E8676B',
+    '#B8A9E8', '#A0A4B0', '#7ED6A8', '#F09A7E',
   ],
   // 状态色
   statusColors: {
-    in_progress: '#3b82f6',
-    pending_response: '#f59e0b',
-    blocked: '#ef4444',
-    on_hold: '#8b5cf6',
-    not_started: '#64748b',
-    completed: '#10b981',
+    in_progress: '#5B8DEF',
+    pending_response: '#F0A551',
+    blocked: '#E8676B',
+    on_hold: '#9B8FD9',
+    not_started: '#C8C8CE',
+    completed: '#5BBD72',
   },
 };
 
@@ -65,7 +68,7 @@ class ChartGenerator {
       if (!this._compactCanvas) {
         this._compactCanvas = new ChartJSNodeCanvas({
           width: WIDTH, height: COMPACT_HEIGHT,
-          backgroundColour: DARK.bg,
+          backgroundColour: LIGHT.bg,
         });
       }
       return this._compactCanvas;
@@ -73,14 +76,14 @@ class ChartGenerator {
     if (!this._canvas) {
       this._canvas = new ChartJSNodeCanvas({
         width: WIDTH, height: HEIGHT,
-        backgroundColour: DARK.bg,
+        backgroundColour: LIGHT.bg,
       });
     }
     return this._canvas;
   }
 
   /**
-   * 部门任务分布（横向堆叠条形图 - 暗色风格）
+   * 部门任务分布（横向堆叠条形图 - 浅色简约）
    */
   async deptBarChart(departments) {
     const sorted = departments
@@ -100,57 +103,59 @@ class ChartGenerator {
           {
             label: '待办',
             data: pending,
-            backgroundColor: 'rgba(239,68,68,0.85)',
-            borderColor: '#ef4444',
-            borderWidth: 1,
-            borderRadius: 6,
-            barPercentage: 0.65,
+            backgroundColor: LIGHT.coral + 'cc',
+            borderColor: LIGHT.coral,
+            borderWidth: 0,
+            borderRadius: 4,
+            barPercentage: 0.55,
           },
           {
             label: '已完成',
             data: completed,
-            backgroundColor: 'rgba(16,185,129,0.85)',
-            borderColor: '#10b981',
-            borderWidth: 1,
-            borderRadius: 6,
-            barPercentage: 0.65,
+            backgroundColor: LIGHT.mint + 'cc',
+            borderColor: LIGHT.mint,
+            borderWidth: 0,
+            borderRadius: 4,
+            barPercentage: 0.55,
           },
         ],
       },
       options: {
         indexAxis: 'y',
         responsive: false,
-        layout: { padding: { top: 10, right: 30, bottom: 10, left: 10 } },
+        layout: { padding: { top: 16, right: 36, bottom: 16, left: 16 } },
         plugins: {
           title: {
             display: true,
-            text: `部门任务分布 · ${dayjs().format('M/D')}`,
-            font: { size: 18, weight: 'bold', family: 'PingFang SC, sans-serif' },
-            color: DARK.text,
-            padding: { bottom: 20 },
+            text: `部门任务分布`,
+            font: { size: 17, weight: '600', family: '"PingFang SC", "SF Pro Display", sans-serif' },
+            color: LIGHT.titleColor,
+            padding: { bottom: 24 },
           },
           legend: {
             position: 'top',
             align: 'end',
             labels: {
-              color: DARK.subtext,
-              font: { size: 13, family: 'PingFang SC, sans-serif' },
+              color: LIGHT.legendColor,
+              font: { size: 12, family: '"PingFang SC", "SF Pro Text", sans-serif' },
               usePointStyle: true,
               pointStyle: 'rectRounded',
-              padding: 16,
+              padding: 20,
             },
           },
         },
         scales: {
           x: {
             stacked: true,
-            grid: { color: DARK.grid, drawBorder: false },
-            ticks: { color: DARK.subtext, font: { size: 12 } },
+            grid: { color: LIGHT.grid, drawBorder: false },
+            ticks: { color: LIGHT.subtext, font: { size: 11 } },
+            border: { display: false },
           },
           y: {
             stacked: true,
             grid: { display: false },
-            ticks: { color: DARK.text, font: { size: 14, weight: 'bold', family: 'PingFang SC, sans-serif' } },
+            ticks: { color: LIGHT.labelColor, font: { size: 13, weight: '500', family: '"PingFang SC", sans-serif' } },
+            border: { display: false },
           },
         },
       },
@@ -160,16 +165,16 @@ class ChartGenerator {
   }
 
   /**
-   * 任务状态环形饼图（暗色风格 + 发光效果）
+   * 任务状态环形饼图（简约浅色）
    */
   async statusDoughnut(summary) {
     const data = [
-      { label: '推进中', value: summary.inProgressTasks || 0, color: DARK.statusColors.in_progress },
-      { label: '催办中', value: summary.pendingResponseTasks || 0, color: DARK.statusColors.pending_response },
-      { label: '阻塞', value: summary.blockedTasks || 0, color: DARK.statusColors.blocked },
-      { label: '暂缓', value: summary.onHoldTasks || 0, color: DARK.statusColors.on_hold },
-      { label: '待启动', value: summary.notStartedTasks || 0, color: DARK.statusColors.not_started },
-      { label: '已完成', value: summary.completedTasks || 0, color: DARK.statusColors.completed },
+      { label: '推进中', value: summary.inProgressTasks || 0, color: LIGHT.statusColors.in_progress },
+      { label: '催办中', value: summary.pendingResponseTasks || 0, color: LIGHT.statusColors.pending_response },
+      { label: '阻塞', value: summary.blockedTasks || 0, color: LIGHT.statusColors.blocked },
+      { label: '暂缓', value: summary.onHoldTasks || 0, color: LIGHT.statusColors.on_hold },
+      { label: '待启动', value: summary.notStartedTasks || 0, color: LIGHT.statusColors.not_started },
+      { label: '已完成', value: summary.completedTasks || 0, color: LIGHT.statusColors.completed },
     ].filter(d => d.value > 0);
 
     const config = {
@@ -179,39 +184,39 @@ class ChartGenerator {
         datasets: [{
           data: data.map(d => d.value),
           backgroundColor: data.map(d => d.color + 'dd'),
-          borderColor: data.map(d => d.color),
-          borderWidth: 2,
-          hoverOffset: 12,
-          spacing: 3,
+          borderColor: '#ffffff',
+          borderWidth: 3,
+          hoverOffset: 8,
+          spacing: 2,
         }],
       },
       options: {
         responsive: false,
-        cutout: '58%',
-        layout: { padding: { top: 10, right: 20, bottom: 10, left: 20 } },
+        cutout: '62%',
+        layout: { padding: { top: 16, right: 24, bottom: 16, left: 24 } },
         plugins: {
           title: {
             display: true,
-            text: `任务状态总览 · ${dayjs().format('M/D')}`,
-            font: { size: 18, weight: 'bold', family: 'PingFang SC, sans-serif' },
-            color: DARK.text,
-            padding: { bottom: 16 },
+            text: `任务状态总览`,
+            font: { size: 17, weight: '600', family: '"PingFang SC", "SF Pro Display", sans-serif' },
+            color: LIGHT.titleColor,
+            padding: { bottom: 20 },
           },
           legend: {
             position: 'right',
             labels: {
-              color: DARK.text,
-              font: { size: 14, family: 'PingFang SC, sans-serif' },
+              color: LIGHT.labelColor,
+              font: { size: 13, family: '"PingFang SC", "SF Pro Text", sans-serif' },
               usePointStyle: true,
               pointStyle: 'circle',
-              padding: 18,
+              padding: 16,
               generateLabels: (chart) => {
                 const dataset = chart.data.datasets[0];
                 return chart.data.labels.map((label, i) => ({
                   text: label,
                   fillStyle: dataset.backgroundColor[i],
-                  strokeStyle: dataset.borderColor[i],
-                  lineWidth: 2,
+                  strokeStyle: '#ffffff',
+                  lineWidth: 0,
                   pointStyle: 'circle',
                   hidden: false,
                   index: i,
@@ -227,7 +232,7 @@ class ChartGenerator {
   }
 
   /**
-   * 部门完成率排行（横向条形图 - 渐变色）
+   * 部门完成率排行（横向条形图 - 柔和渐变色）
    */
   async completionRateChart(departments) {
     const deptRates = departments
@@ -241,12 +246,9 @@ class ChartGenerator {
       .slice(0, 10);
 
     const colors = deptRates.map(d =>
-      d.rate >= 50 ? 'rgba(16,185,129,0.85)' :
-      d.rate >= 20 ? 'rgba(245,158,11,0.85)' :
-      'rgba(239,68,68,0.85)'
-    );
-    const borderColors = deptRates.map(d =>
-      d.rate >= 50 ? '#10b981' : d.rate >= 20 ? '#f59e0b' : '#ef4444'
+      d.rate >= 50 ? LIGHT.green + 'cc' :
+      d.rate >= 20 ? LIGHT.orange + 'cc' :
+      LIGHT.coral + 'cc'
     );
 
     const config = {
@@ -257,39 +259,40 @@ class ChartGenerator {
           label: '完成率 %',
           data: deptRates.map(d => d.rate),
           backgroundColor: colors,
-          borderColor: borderColors,
-          borderWidth: 1,
-          borderRadius: 6,
-          barPercentage: 0.6,
+          borderWidth: 0,
+          borderRadius: 4,
+          barPercentage: 0.5,
         }],
       },
       options: {
         indexAxis: 'y',
         responsive: false,
-        layout: { padding: { top: 10, right: 40, bottom: 10, left: 10 } },
+        layout: { padding: { top: 16, right: 44, bottom: 16, left: 16 } },
         plugins: {
           title: {
             display: true,
-            text: `部门完成率排行`,
-            font: { size: 18, weight: 'bold', family: 'PingFang SC, sans-serif' },
-            color: DARK.text,
-            padding: { bottom: 20 },
+            text: `部门完成率`,
+            font: { size: 17, weight: '600', family: '"PingFang SC", "SF Pro Display", sans-serif' },
+            color: LIGHT.titleColor,
+            padding: { bottom: 24 },
           },
           legend: { display: false },
         },
         scales: {
           x: {
             max: 100,
-            grid: { color: DARK.grid, drawBorder: false },
+            grid: { color: LIGHT.grid, drawBorder: false },
             ticks: {
-              color: DARK.subtext,
-              font: { size: 12 },
+              color: LIGHT.subtext,
+              font: { size: 11 },
               callback: (v) => v + '%',
             },
+            border: { display: false },
           },
           y: {
             grid: { display: false },
-            ticks: { color: DARK.text, font: { size: 14, weight: 'bold', family: 'PingFang SC, sans-serif' } },
+            ticks: { color: LIGHT.labelColor, font: { size: 13, weight: '500', family: '"PingFang SC", sans-serif' } },
+            border: { display: false },
           },
         },
       },
@@ -299,7 +302,7 @@ class ChartGenerator {
   }
 
   /**
-   * 部门异常信号图（阻塞/逾期/催办堆叠 - 暗色风格）
+   * 部门异常信号图（阻塞/逾期/催办堆叠 - 浅色）
    */
   async deptHealthChart(departments) {
     const today = dayjs();
@@ -329,66 +332,65 @@ class ChartGenerator {
           {
             label: '阻塞',
             data: deptData.map(d => d.blocked),
-            backgroundColor: 'rgba(239,68,68,0.85)',
-            borderColor: '#ef4444',
-            borderWidth: 1,
-            borderRadius: 4,
-            barPercentage: 0.65,
+            backgroundColor: LIGHT.red + 'cc',
+            borderWidth: 0,
+            borderRadius: 3,
+            barPercentage: 0.55,
           },
           {
             label: '逾期',
             data: deptData.map(d => d.overdue),
-            backgroundColor: 'rgba(249,115,22,0.85)',
-            borderColor: '#f97316',
-            borderWidth: 1,
-            borderRadius: 4,
-            barPercentage: 0.65,
+            backgroundColor: LIGHT.orange + 'cc',
+            borderWidth: 0,
+            borderRadius: 3,
+            barPercentage: 0.55,
           },
           {
             label: '催办中',
             data: deptData.map(d => d.urgent),
-            backgroundColor: 'rgba(245,158,11,0.85)',
-            borderColor: '#f59e0b',
-            borderWidth: 1,
-            borderRadius: 4,
-            barPercentage: 0.65,
+            backgroundColor: LIGHT.amber + 'cc',
+            borderWidth: 0,
+            borderRadius: 3,
+            barPercentage: 0.55,
           },
         ],
       },
       options: {
         indexAxis: 'y',
         responsive: false,
-        layout: { padding: { top: 10, right: 30, bottom: 10, left: 10 } },
+        layout: { padding: { top: 16, right: 36, bottom: 16, left: 16 } },
         plugins: {
           title: {
             display: true,
-            text: `部门异常信号 · ${dayjs().format('M/D')}`,
-            font: { size: 18, weight: 'bold', family: 'PingFang SC, sans-serif' },
-            color: DARK.text,
-            padding: { bottom: 20 },
+            text: `异常信号`,
+            font: { size: 17, weight: '600', family: '"PingFang SC", "SF Pro Display", sans-serif' },
+            color: LIGHT.titleColor,
+            padding: { bottom: 24 },
           },
           legend: {
             position: 'top',
             align: 'end',
             labels: {
-              color: DARK.subtext,
-              font: { size: 13, family: 'PingFang SC, sans-serif' },
+              color: LIGHT.legendColor,
+              font: { size: 12, family: '"PingFang SC", "SF Pro Text", sans-serif' },
               usePointStyle: true,
               pointStyle: 'rectRounded',
-              padding: 16,
+              padding: 20,
             },
           },
         },
         scales: {
           x: {
             stacked: true,
-            grid: { color: DARK.grid, drawBorder: false },
-            ticks: { color: DARK.subtext, font: { size: 12 }, stepSize: 1 },
+            grid: { color: LIGHT.grid, drawBorder: false },
+            ticks: { color: LIGHT.subtext, font: { size: 11 }, stepSize: 1 },
+            border: { display: false },
           },
           y: {
             stacked: true,
             grid: { display: false },
-            ticks: { color: DARK.text, font: { size: 14, weight: 'bold', family: 'PingFang SC, sans-serif' } },
+            ticks: { color: LIGHT.labelColor, font: { size: 13, weight: '500', family: '"PingFang SC", sans-serif' } },
+            border: { display: false },
           },
         },
       },

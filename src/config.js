@@ -8,6 +8,10 @@ module.exports = {
     robotSecret: process.env.DINGTALK_ROBOT_SECRET,
     docId: process.env.DINGTALK_DOC_ID,
     spaceId: process.env.DINGTALK_SPACE_ID,
+    // 互动卡片配置
+    cardTemplateId: process.env.DINGTALK_CARD_TEMPLATE_ID,
+    openConversationId: process.env.DINGTALK_OPEN_CONVERSATION_ID,
+    cardCallbackUrl: process.env.DINGTALK_CARD_CALLBACK_URL,
   },
   ai: {
     // 主引擎：优先使用 Gemini，其次 Kimi，都没有则降级到规则引擎

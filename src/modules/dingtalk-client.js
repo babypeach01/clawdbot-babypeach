@@ -137,6 +137,128 @@ class DingTalkClient {
   }
 
   /**
+   * 发送钉钉互动卡片消息（原生嵌入式卡片）
+   *
+   * @param {string} cardTemplateId - 在钉钉开发者后台注册的卡片模板ID
+   * @param {string} outTrackId - 卡片唯一标识（用于更新卡片内容）
+   * @param {Object} cardData - 卡片模板变量数据
+   * @param {Object} options - 可选参数
+   * @param {string} options.openConversationId - 群会话ID（群聊场景必填）
+   * @param {string[]} options.userIdList - 接收人userId列表（单聊场景）
+   * @param {boolean} options.supportForward - 是否支持转发，默认true
+   */
+  async sendInteractiveCard(cardTemplateId, outTrackId, cardData, options = {}) {
+    try {
+      const token = await this.getAccessToken();
+
+      const payload = {
+        cardTemplateId,
+        outTrackId,
+        cardData: {
+          cardParamMap: cardData,
+        },
+      };
+
+      // 群聊场景
+      if (options.openConversationId) {
+        payload.openConversationId = options.openConversationId;
+      }
+
+      // 指定接收人
+      if (options.userIdList && options.userIdList.length > 0) {
+        payload.imGroupOpenDeliverModel = {
+          userIdList: options.userIdList,
+        };
+      }
+
+      // 是否支持转发
+      if (options.supportForward !== undefined) {
+        payload.supportForward = options.supportForward;
+      }
+
+      const res = await axios.post(
+        `${this.newApiBase}/v1.0/im/v1.0/robot/interactiveCards/send`,
+        payload,
+        {
+          headers: {
+            'x-acs-dingtalk-access-token': token,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      logger.info(`互动卡片发送成功: ${outTrackId}`);
+      return { success: true, result: res.data };
+    } catch (err) {
+      logger.error(`互动卡片发送失败: ${err.response?.data?.message || err.message}`);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * 更新已发送的互动卡片内容（用于分页、状态更新等）
+   *
+   * @param {string} outTrackId - 卡片唯一标识
+   * @param {Object} cardData - 更新的卡片数据
+   */
+  async updateInteractiveCard(outTrackId, cardData) {
+    try {
+      const token = await this.getAccessToken();
+
+      const res = await axios.put(
+        `${this.newApiBase}/v1.0/im/v1.0/robot/interactiveCards`,
+        {
+          outTrackId,
+          cardData: {
+            cardParamMap: cardData,
+          },
+        },
+        {
+          headers: {
+            'x-acs-dingtalk-access-token': token,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      logger.info(`互动卡片更新成功: ${outTrackId}`);
+      return { success: true, result: res.data };
+    } catch (err) {
+      logger.error(`互动卡片更新失败: ${err.response?.data?.message || err.message}`);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * 注册互动卡片回调地址（用于处理卡片内按钮点击等交互事件）
+   *
+   * @param {string} callbackUrl - 回调URL
+   * @param {string} callbackRouteKey - 路由标识
+   */
+  async registerCardCallback(callbackUrl, callbackRouteKey) {
+    try {
+      const token = await this.getAccessToken();
+
+      const res = await axios.post(
+        `${this.newApiBase}/v1.0/im/v1.0/robot/interactiveCards/callbackUrls`,
+        { callbackUrl, callbackRouteKey },
+        {
+          headers: {
+            'x-acs-dingtalk-access-token': token,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      logger.info(`互动卡片回调注册成功: ${callbackRouteKey}`);
+      return { success: true, result: res.data };
+    } catch (err) {
+      logger.error(`互动卡片回调注册失败: ${err.message}`);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
    * 通过工作通知发送单独消息给管理员（用于紧急预警）
    */
   async sendWorkNotification(userId, title, content) {
