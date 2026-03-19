@@ -400,145 +400,193 @@ class ChartGenerator {
   }
 
   /**
-   * ⭐ 综合总览图（一张图看全局）
-   * 横向分组柱状图：每部门显示 已完成 / 待办 / 异常
-   * 顶部标注日期+整体达成率
+   * ⭐ 当日总览表格图（用 canvas 直接画表格，不依赖 Chart.js）
+   *
+   * 表格列：部门 | 总数 | 待办 | 已完成 | 今日到期 | 逾期 | 阻塞 | 达成率
+   * 直接嵌入钉钉消息，不需要点击/下载
    */
-  async overviewChart(taskData) {
+  async dailySummaryTable(taskData) {
+    const { createCanvas } = require('canvas');
     const today = dayjs();
     const dateStr = today.format('M月D日');
     const weekday = ['周日','周一','周二','周三','周四','周五','周六'][today.day()];
     const { departments, summary } = taskData;
-    const totalRate = summary.totalTasks > 0 ? Math.round((summary.completedTasks / summary.totalTasks) * 100) : 0;
 
+    // 准备数据
     const depts = departments
       .filter(d => ((d.pendingCount || 0) + (d.completedCount || 0)) > 0)
-      .sort((a, b) => {
-        const ra = this._rate(a), rb = this._rate(b);
-        return ra - rb; // 差的在上面（先看到问题）
-      })
-      .slice(0, 12);
+      .sort((a, b) => this._rate(a) - this._rate(b));
 
-    const labels = depts.map(d => this._shortName(d.department));
-    const completed = depts.map(d => d.completedCount || 0);
-    const pending = depts.map(d => {
-      const p = d.pendingCount || 0;
-      const blocked = (d.tasks || []).filter(t => !t.isCompleted && (t.statusKey === 'blocked' || (t.deadline && dayjs(t.deadline).isBefore(today, 'day')))).length;
-      return Math.max(0, p - blocked);
+    const rows = depts.map(d => {
+      const tasks = d.tasks || [];
+      const total = (d.pendingCount || 0) + (d.completedCount || 0);
+      const done = d.completedCount || 0;
+      const pending = d.pendingCount || 0;
+      const dueToday = tasks.filter(t => !t.isCompleted && t.deadline && dayjs(t.deadline).isSame(today, 'day')).length;
+      const overdue = tasks.filter(t => !t.isCompleted && t.deadline && dayjs(t.deadline).isBefore(today, 'day')).length;
+      const blocked = tasks.filter(t => !t.isCompleted && t.statusKey === 'blocked').length;
+      const rate = this._rate(d);
+      return {
+        dept: this._shortName(d.department),
+        total, pending, done, dueToday, overdue, blocked, rate,
+      };
     });
-    const abnormal = depts.map(d => {
-      return (d.tasks || []).filter(t => !t.isCompleted && (t.statusKey === 'blocked' || (t.deadline && dayjs(t.deadline).isBefore(today, 'day')))).length;
-    });
-    const rates = depts.map(d => this._rate(d));
 
-    // 动态高度：根据部门数适配，少于4个部门也不会太空
-    const chartH = Math.min(700, Math.max(300, depts.length * 50 + 120));
-
-    const config = {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          {
-            label: '已完成',
-            data: completed,
-            backgroundColor: '#5BBD72cc',
-            borderWidth: 0,
-            borderRadius: 3,
-            barPercentage: 0.6,
-            categoryPercentage: 0.75,
-          },
-          {
-            label: '进行中',
-            data: pending,
-            backgroundColor: '#5B8DEFcc',
-            borderWidth: 0,
-            borderRadius: 3,
-            barPercentage: 0.6,
-            categoryPercentage: 0.75,
-          },
-          {
-            label: '异常（逾期/阻塞）',
-            data: abnormal,
-            backgroundColor: '#E8676Bcc',
-            borderWidth: 0,
-            borderRadius: 3,
-            barPercentage: 0.6,
-            categoryPercentage: 0.75,
-          },
-        ],
-      },
-      options: {
-        indexAxis: 'y',
-        responsive: false,
-        layout: { padding: { top: 8, right: 60, bottom: 16, left: 8 } },
-        plugins: {
-          title: {
-            display: true,
-            text: `${dateStr} ${weekday}  工作总览  |  达成率 ${totalRate}%  |  共${summary.totalTasks}项  完成${summary.completedTasks}  待办${summary.totalTasks - summary.completedTasks}`,
-            font: { size: 16, weight: '600', family: '"PingFang SC", "SF Pro Display", sans-serif' },
-            color: LIGHT.titleColor,
-            padding: { bottom: 20, top: 8 },
-          },
-          legend: {
-            position: 'top',
-            align: 'center',
-            labels: {
-              color: LIGHT.legendColor,
-              font: { size: 12, family: '"PingFang SC", "SF Pro Text", sans-serif' },
-              usePointStyle: true,
-              pointStyle: 'rectRounded',
-              padding: 18,
-            },
-          },
-          // 在柱条右侧显示达成率
-          datalabels: false,
-        },
-        scales: {
-          x: {
-            stacked: true,
-            grid: { color: LIGHT.grid, drawBorder: false },
-            ticks: { color: LIGHT.subtext, font: { size: 11 }, stepSize: 1 },
-            border: { display: false },
-            title: { display: true, text: '事项数', color: LIGHT.subtext, font: { size: 11 } },
-          },
-          y: {
-            stacked: true,
-            grid: { display: false },
-            ticks: {
-              color: LIGHT.labelColor,
-              font: { size: 13, weight: '500', family: '"PingFang SC", sans-serif' },
-              callback: function(value, index) {
-                return labels[index] + '  ' + rates[index] + '%';
-              },
-            },
-            border: { display: false },
-          },
-        },
-      },
-      plugins: [{
-        id: 'rateLabels',
-        afterDraw: (chart) => {
-          const ctx = chart.ctx;
-          const meta = chart.getDatasetMeta(2); // 最后一个dataset
-          meta.data.forEach((bar, i) => {
-            const total = completed[i] + pending[i] + abnormal[i];
-            if (total === 0) return;
-            ctx.save();
-            ctx.fillStyle = LIGHT.subtext;
-            ctx.font = '12px "PingFang SC", sans-serif';
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            const x = bar.x + 8;
-            const y = bar.y;
-            ctx.fillText(`${completed[i]}/${total}`, x, y);
-            ctx.restore();
-          });
-        },
-      }],
+    // 汇总行
+    const totals = {
+      dept: '合计',
+      total: summary.totalTasks,
+      pending: summary.totalTasks - summary.completedTasks,
+      done: summary.completedTasks,
+      dueToday: rows.reduce((s, r) => s + r.dueToday, 0),
+      overdue: rows.reduce((s, r) => s + r.overdue, 0),
+      blocked: rows.reduce((s, r) => s + r.blocked, 0),
+      rate: summary.totalTasks > 0 ? Math.round((summary.completedTasks / summary.totalTasks) * 100) : 0,
     };
 
-    return this._render(config, chartH);
+    // ── 表格布局参数 ──
+    const cols = [
+      { key: 'dept',     label: '部门',     width: 130, align: 'left' },
+      { key: 'total',    label: '总数',     width: 60,  align: 'center' },
+      { key: 'pending',  label: '待办',     width: 60,  align: 'center' },
+      { key: 'done',     label: '已完成',   width: 70,  align: 'center' },
+      { key: 'dueToday', label: '今日到期', width: 80,  align: 'center' },
+      { key: 'overdue',  label: '逾期',     width: 60,  align: 'center' },
+      { key: 'blocked',  label: '阻塞',     width: 60,  align: 'center' },
+      { key: 'rate',     label: '达成率',   width: 80,  align: 'center' },
+    ];
+
+    const padX = 24;          // 画布左右边距
+    const titleH = 60;        // 标题区高度
+    const headerH = 40;       // 表头行高
+    const rowH = 38;          // 数据行高
+    const totalRowH = 42;     // 汇总行高
+    const footH = 28;         // 底部留白
+    const tableW = cols.reduce((s, c) => s + c.width, 0);
+    const canvasW = tableW + padX * 2;
+    const canvasH = titleH + headerH + rows.length * rowH + totalRowH + footH;
+
+    const canvas = createCanvas(canvasW, canvasH);
+    const ctx = canvas.getContext('2d');
+
+    // ── 背景 ──
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, canvasW, canvasH);
+
+    // ── 标题 ──
+    ctx.fillStyle = '#1a1a2e';
+    ctx.font = 'bold 18px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${dateStr} ${weekday} · 当日工作总览`, padX, titleH / 2 - 2);
+
+    // 右侧总数据
+    ctx.font = '13px "PingFang SC", sans-serif';
+    ctx.fillStyle = '#6B7280';
+    ctx.textAlign = 'right';
+    const summaryText = `共${totals.total}项  完成${totals.done}  待办${totals.pending}  达成率${totals.rate}%`;
+    ctx.fillText(summaryText, canvasW - padX, titleH / 2 - 2);
+
+    // ── 表头 ──
+    let y = titleH;
+    ctx.fillStyle = '#F1F5F9';
+    ctx.fillRect(padX, y, tableW, headerH);
+
+    // 表头文字
+    ctx.font = 'bold 13px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = '#374151';
+    ctx.textBaseline = 'middle';
+    let x = padX;
+    for (const col of cols) {
+      ctx.textAlign = col.align === 'left' ? 'left' : 'center';
+      const tx = col.align === 'left' ? x + 12 : x + col.width / 2;
+      ctx.fillText(col.label, tx, y + headerH / 2);
+      x += col.width;
+    }
+
+    // 表头底线
+    ctx.strokeStyle = '#D1D5DB';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padX, y + headerH);
+    ctx.lineTo(padX + tableW, y + headerH);
+    ctx.stroke();
+
+    // ── 数据行 ──
+    y += headerH;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+
+      // 斑马纹
+      if (i % 2 === 1) {
+        ctx.fillStyle = '#F9FAFB';
+        ctx.fillRect(padX, y, tableW, rowH);
+      }
+
+      // 行底线
+      ctx.strokeStyle = '#F3F4F6';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(padX, y + rowH);
+      ctx.lineTo(padX + tableW, y + rowH);
+      ctx.stroke();
+
+      x = padX;
+      for (const col of cols) {
+        let val = row[col.key];
+        let color = '#374151';
+
+        // 数字着色
+        if (col.key === 'dueToday' && val > 0) color = '#D97706';
+        if (col.key === 'overdue' && val > 0) color = '#DC2626';
+        if (col.key === 'blocked' && val > 0) color = '#DC2626';
+        if (col.key === 'rate') {
+          if (val >= 60) color = '#059669';
+          else if (val >= 30) color = '#D97706';
+          else color = '#DC2626';
+          val = val + '%';
+        }
+        if (col.key === 'done' && val > 0) color = '#059669';
+
+        ctx.font = col.key === 'dept' ? 'bold 13px "PingFang SC", "Microsoft YaHei", sans-serif' : '13px "PingFang SC", sans-serif';
+        ctx.fillStyle = color;
+        ctx.textAlign = col.align === 'left' ? 'left' : 'center';
+        const tx = col.align === 'left' ? x + 12 : x + col.width / 2;
+        ctx.fillText(String(val), tx, y + rowH / 2);
+        x += col.width;
+      }
+
+      y += rowH;
+    }
+
+    // ── 汇总行 ──
+    ctx.fillStyle = '#EFF6FF';
+    ctx.fillRect(padX, y, tableW, totalRowH);
+    ctx.strokeStyle = '#93C5FD';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padX, y);
+    ctx.lineTo(padX + tableW, y);
+    ctx.stroke();
+
+    x = padX;
+    for (const col of cols) {
+      let val = totals[col.key];
+      let color = '#1E40AF';
+      if (col.key === 'dueToday' && val > 0) color = '#D97706';
+      if (col.key === 'overdue' && val > 0) color = '#DC2626';
+      if (col.key === 'blocked' && val > 0) color = '#DC2626';
+      if (col.key === 'rate') val = val + '%';
+
+      ctx.font = 'bold 13px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = color;
+      ctx.textAlign = col.align === 'left' ? 'left' : 'center';
+      const tx = col.align === 'left' ? x + 12 : x + col.width / 2;
+      ctx.fillText(String(val), tx, y + totalRowH / 2);
+      x += col.width;
+    }
+
+    return canvas.toBuffer('image/png');
   }
 
   _rate(d) {
