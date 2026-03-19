@@ -1,14 +1,12 @@
 /**
- * 定时任务调度器（v2）
+ * 定时任务调度器（v3 - 总结汇报导向）
  *
- * 执行流程：
- * 1. 读取钉钉在线文档
- * 2. 正则解析任务数据（快速粗提取）
- * 3. 如果正则解析效果差，调用AI智能提取（兜底）
- * 4. AI去重和合并同类项
- * 5. AI风险分析
- * 6. 发送催办消息 + 预警
- * 7. 生成报告 + 保存快照
+ * 工作流：
+ *   10:00  宏观总结卡片 → 群（互动卡片+原生图表）
+ *   17:00  重点事项预警 → 管理者私信（管理者审核后手动推送）
+ *   周五18:00  周回顾 → 群
+ *
+ * 数据刷新：每天 09:30 自动从钉钉文档拉取最新数据
  */
 const cron = require('node-cron');
 const dayjs = require('dayjs');
@@ -16,197 +14,153 @@ const config = require('./config');
 const dingtalk = require('./modules/dingtalk-client');
 const taskParser = require('./modules/task-parser');
 const aiAnalyzer = require('./modules/ai-analyzer');
-const reminderEngine = require('./modules/reminder-engine');
 const reportGenerator = require('./modules/report-generator');
 const messageTemplates = require('./modules/message-templates');
 const dataStore = require('./modules/data-store');
 const logger = require('./utils/logger');
 
 /**
- * 核心执行流程
+ * 数据刷新：从钉钉文档拉取最新任务数据
  */
-async function runFullCycle(mode = 'scheduled') {
-  logger.info(`====== 开始执行全流程 (${mode}) ======`);
-
+async function refreshData() {
+  logger.info('🔄 刷新任务数据...');
   try {
-    // Step 1: 读取钉钉在线文档
-    logger.info('[1/7] 读取钉钉在线文档...');
     const docContent = await dingtalk.getDocContent();
     const rawText = typeof docContent === 'string' ? docContent : JSON.stringify(docContent);
 
-    // Step 2: 正则解析（快速粗提取）
-    logger.info('[2/7] 正则解析文档内容...');
     let taskData = taskParser.parseDocContent(rawText);
 
-    // Step 3: 如果正则解析效果不好（任务太少），用AI兜底提取
     if (taskData.summary.totalTasks === 0 || taskData.departments.length === 0) {
-      logger.info('[2.5/7] 正则解析结果为空，启用AI智能提取...');
+      logger.info('正则解析为空，启用AI提取...');
       const aiExtracted = await aiAnalyzer.extractTasksFromRawText(rawText);
       if (aiExtracted && aiExtracted.summary.totalTasks > 0) {
         taskData = aiExtracted;
-        logger.info(`AI提取到 ${taskData.summary.totalTasks} 个任务`);
       }
     }
 
-    // Step 4: 与历史数据对比
-    const previousData = dataStore.loadLatestTasks();
-    const changes = taskParser.detectChanges(taskData, previousData);
-    if (changes.length > 0) {
-      logger.info(`检测到 ${changes.length} 项变更`);
-    }
-
-    // Step 5: AI去重
-    logger.info('[3/7] AI去重分析...');
-    const { duplicates } = await aiAnalyzer.deduplicateTasks(taskData);
-    if (duplicates.length > 0) {
-      const dedupReport = reportGenerator.generateDeduplicationReport(duplicates);
-      if (dedupReport) {
-        await dingtalk.sendRobotMessage('重复任务检测', dedupReport);
-      }
-    }
-
-    // Step 6: AI风险分析
-    logger.info('[4/7] AI智能分析...');
-    const analysisResult = await aiAnalyzer.analyzeAll(taskData);
-
-    // Step 7: 发送催办消息
-    logger.info('[5/7] 发送催办消息...');
-    await reminderEngine.sendDailyReminders(analysisResult, taskData);
-
-    // Step 8: 发送人工预警
-    logger.info('[6/7] 检查预警...');
-    if (analysisResult.alertsForManager && analysisResult.alertsForManager.length > 0) {
-      await reminderEngine.sendManagerAlert(analysisResult.alertsForManager);
-      logger.info(`⚠️ 已触发 ${analysisResult.alertsForManager.length} 条人工预警`);
-    }
-
-    // Step 9: 生成并发送看板
-    logger.info('[7/7] 生成看板报告...');
-    const dashboard = await reportGenerator.generateDailyDashboard(taskData, analysisResult);
-    await dingtalk.sendRobotMessage('每日看板', dashboard);
-
-    // Step 10: 保存数据
     dataStore.saveLatestTasks(taskData);
-    dataStore.saveAnalysis(dayjs().format('YYYY-MM-DD'), analysisResult);
-    reportGenerator.saveSnapshot(taskData, analysisResult);
-
-    logger.info('====== 全流程执行完成 ======');
-    return { success: true, taskData, analysisResult, dashboard, duplicates };
+    reportGenerator.saveSnapshot(taskData);
+    logger.info(`✓ 数据已更新: ${taskData.summary.totalTasks}事项 ${taskData.departments.length}部门`);
+    return taskData;
   } catch (err) {
-    logger.error(`全流程执行失败: ${err.message}`);
-    await dingtalk.sendRobotMessage(
-      '⚠️ 系统异常',
-      `### 系统执行异常\n\n自动化流程执行出错: ${err.message}\n\n请检查系统配置。`
-    ).catch(() => {});
-    return { success: false, error: err.message };
+    logger.error(`数据刷新失败: ${err.message}`);
+    return null;
   }
 }
 
 /**
- * 发送晨报（只看异常：逾期/阻塞/催办中）
+ * 10:00 宏观总结卡片 → 群
  */
-async function sendMorningBrief() {
-  logger.info('📧 发送晨报...');
+async function sendMorningSummary() {
+  logger.info('📊 发送宏观总结卡片...');
   const taskData = dataStore.loadLatestTasks();
-  if (!taskData || !taskData.departments) {
-    logger.warn('无任务数据，跳过晨报');
-    return;
+  if (!taskData?.departments) { logger.warn('无数据，跳过'); return; }
+
+  const cardTemplateId = config.dingtalk.cardTemplateId;
+  if (!cardTemplateId) { logger.warn('未配置卡片模板ID'); return; }
+
+  const cardData = messageTemplates.generateCardData(taskData);
+  const cardParamMap = {
+    title: cardData.title,
+    completionRate: cardData.completionRate,
+    pendingCount: cardData.pendingCount,
+    completedCount: cardData.completedCount,
+    chartData: JSON.stringify(cardData.chartData),
+    alerts: cardData.alerts,
+  };
+
+  const outTrackId = `clawdbot-morning-${Date.now()}`;
+  const options = {};
+  if (config.dingtalk.openConversationId) {
+    options.openConversationId = config.dingtalk.openConversationId;
   }
-  const { title, text } = messageTemplates.generateMorningBrief(taskData);
-  await dingtalk.sendRobotMessage(title, text);
+
+  const result = await dingtalk.sendInteractiveCard(cardTemplateId, outTrackId, cardParamMap, options);
+  if (result.success) logger.info('✓ 宏观总结卡片已发送');
+  else logger.error(`卡片发送失败: ${result.error}`);
 }
 
 /**
- * 发送部门看板（图表为主）
+ * 17:00 重点事项预警 → 管理者私信
  */
-async function sendDashboard() {
-  logger.info('📧 发送部门看板...');
+async function sendPrivateAlert() {
+  logger.info('⚠️ 发送重点事项预警...');
   const taskData = dataStore.loadLatestTasks();
-  if (!taskData || !taskData.departments) {
-    logger.warn('无任务数据，跳过看板');
-    return;
-  }
-  const previousData = dataStore.loadLatestTasks(); // TODO: load yesterday's snapshot for diff
-  const changes = taskParser.detectChanges(taskData, previousData);
-  const { title, text } = messageTemplates.generateDashboard(taskData, changes);
-  await dingtalk.sendRobotMessage(title, text);
-}
+  if (!taskData?.departments) { logger.warn('无数据，跳过'); return; }
 
-/**
- * 发送催办消息（仅逾期+阻塞，逐条独立发送）
- */
-async function sendUrgentAlerts() {
-  logger.info('📧 发送催办消息...');
-  const taskData = dataStore.loadLatestTasks();
-  if (!taskData || !taskData.departments) return;
+  const alertMsg = messageTemplates.generatePrivateAlert(taskData);
+  if (!alertMsg) { logger.info('✅ 无异常事项'); return; }
 
-  const alerts = messageTemplates.generateUrgentAlerts(taskData);
-  // 限制最多发5条，避免刷屏
-  for (const alert of alerts.slice(0, 5)) {
-    await dingtalk.sendRobotMessage(alert.title, alert.text);
-    // 间隔2秒避免频率限制
-    await new Promise(r => setTimeout(r, 2000));
+  const adminUserId = config.alert.adminUserId;
+  if (adminUserId && adminUserId !== 'your_admin_user_id') {
+    const ok = await dingtalk.sendWorkNotification(adminUserId, alertMsg.title, alertMsg.text);
+    if (ok) logger.info('✓ 预警已发送给管理者');
+    else logger.error('预警私信发送失败，降级到群消息');
   }
-  if (alerts.length > 0) {
-    logger.info(`已发送${Math.min(alerts.length, 5)}条催办（共${alerts.length}条）`);
+
+  // 降级：也发到群（管理者可能没配userId）
+  if (!adminUserId || adminUserId === 'your_admin_user_id') {
+    await dingtalk.sendRobotMessage(alertMsg.title, alertMsg.text);
+    logger.info('✓ 预警已发送到群（未配置管理者ID）');
   }
 }
 
 /**
- * 发送周回顾（周五替代晚报）
+ * 周五 18:00 周回顾 → 群
  */
 async function sendWeeklyReview() {
-  logger.info('📧 发送周回顾...');
+  logger.info('📅 发送周回顾...');
   const taskData = dataStore.loadLatestTasks();
-  if (!taskData || !taskData.departments) return;
+  if (!taskData?.departments) return;
 
-  const weekData = reportGenerator.loadRecentSnapshots(5);
-  const { title, text } = messageTemplates.generateWeeklyReview(taskData, weekData);
+  const { title, text } = messageTemplates.generateWeeklyReview(taskData);
   await dingtalk.sendRobotMessage(title, text);
+  logger.info('✓ 周回顾已发送');
 }
 
 /**
  * 启动定时任务
  */
 function startScheduler() {
-  logger.info('=== 钉钉待办自动化催办系统启动 (v3) ===');
+  logger.info('=== ClawdBot 报送系统启动 (v3 总结导向) ===');
 
-  // ┌─────────────────────────────────────────┐
-  // │  时间表（工作日 Mon-Fri）                  │
-  // │  10:00  晨报焦点（半屏，只看异常）           │
-  // │  14:00  催办提醒（逾期+阻塞，逐条发）        │
-  // │  18:00  部门看板（一屏图表）                 │
-  // │  周五16:00  周回顾（替代当日晚报）           │
-  // └─────────────────────────────────────────┘
+  // 09:30 数据刷新
+  cron.schedule('30 9 * * 1-5', () => {
+    refreshData().catch(e => logger.error(`数据刷新失败: ${e.message}`));
+  });
+  logger.info('已注册: 09:30 数据刷新');
 
-  // 晨报 10:00
+  // 10:00 宏观总结卡片 → 群
   cron.schedule('0 10 * * 1-5', () => {
-    logger.info('⏰ 定时触发: 晨报');
-    sendMorningBrief().catch(e => logger.error(`晨报失败: ${e.message}`));
+    sendMorningSummary().catch(e => logger.error(`总结卡片失败: ${e.message}`));
   });
-  logger.info('已注册: 每工作日 10:00 晨报');
+  logger.info('已注册: 10:00 宏观总结卡片');
 
-  // 催办 14:00
-  cron.schedule('0 14 * * 1-5', () => {
-    logger.info('⏰ 定时触发: 催办');
-    sendUrgentAlerts().catch(e => logger.error(`催办失败: ${e.message}`));
+  // 17:00 重点事项预警 → 管理者私信
+  cron.schedule('0 17 * * 1-5', () => {
+    sendPrivateAlert().catch(e => logger.error(`预警失败: ${e.message}`));
   });
-  logger.info('已注册: 每工作日 14:00 催办');
+  logger.info('已注册: 17:00 重点事项预警');
 
-  // 晚间看板 18:00
-  cron.schedule('0 18 * * 1-5', () => {
-    const isFriday = dayjs().day() === 5;
-    if (isFriday) {
-      logger.info('⏰ 周五触发: 周回顾');
-      sendWeeklyReview().catch(e => logger.error(`周回顾失败: ${e.message}`));
-    } else {
-      logger.info('⏰ 定时触发: 部门看板');
-      sendDashboard().catch(e => logger.error(`看板失败: ${e.message}`));
-    }
+  // 周五 18:00 周回顾
+  cron.schedule('0 18 * * 5', () => {
+    sendWeeklyReview().catch(e => logger.error(`周回顾失败: ${e.message}`));
   });
-  logger.info('已注册: 每工作日 18:00 看板/周五周回顾');
+  logger.info('已注册: 周五18:00 周回顾');
 
-  logger.info('所有定时任务已注册，系统运行中...');
+  logger.info('所有定时任务已注册');
 }
 
-module.exports = { runFullCycle, startScheduler };
+/**
+ * 手动执行全流程（API触发用）
+ */
+async function runFullCycle(mode = 'manual') {
+  logger.info(`====== 手动执行 (${mode}) ======`);
+  const taskData = await refreshData();
+  if (!taskData) return { success: false, error: '数据刷新失败' };
+
+  await sendMorningSummary();
+  return { success: true, taskData };
+}
+
+module.exports = { runFullCycle, startScheduler, refreshData };

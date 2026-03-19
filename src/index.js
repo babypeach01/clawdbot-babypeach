@@ -172,6 +172,31 @@ app.get('/api/status', (req, res) => {
 });
 
 /**
+ * 手动推送正式报告到群（管理者审核后触发）
+ *
+ * POST /api/push
+ * Body: { "notes": "管理者备注（可选）" }
+ */
+app.post('/api/push', async (req, res) => {
+  try {
+    const { notes } = req.body || {};
+    const taskData = dataStore.loadLatestTasks();
+    if (!taskData?.departments) {
+      return res.status(400).json({ error: '无任务数据' });
+    }
+
+    const report = messageTemplates.generateFormalReport(taskData, notes || '');
+    const ok = await dingtalk.sendRobotMessage(report.title, report.text);
+
+    logger.info(`手动推送正式报告: ${ok ? '成功' : '失败'}`);
+    res.json({ success: ok, title: report.title });
+  } catch (err) {
+    logger.error(`推送接口错误: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * 获取趋势数据
  */
 app.get('/api/trends', (req, res) => {
@@ -186,11 +211,11 @@ app.get('/api/trends', (req, res) => {
 app.listen(config.server.port, () => {
   logger.info(`HTTP服务已启动: http://localhost:${config.server.port}`);
   logger.info('可用接口:');
-  logger.info('  GET  /               - Web管理后台');
   logger.info('  GET  /health          - 健康检查');
-  logger.info('  POST /api/trigger     - 手动触发催办流程');
+  logger.info('  POST /api/trigger     - 手动触发完整流程');
+  logger.info('  POST /api/push        - ⭐ 手动推送正式报告到群');
   logger.info('  POST /api/analyze     - 提交文档内容分析');
-  logger.info('  POST /api/process     - 提交文档内容执行完整流程');
+  logger.info('  POST /api/process     - 提交文档执行完整流程');
   logger.info('  GET  /api/status      - 查看最新状态');
   logger.info('  GET  /api/trends      - 查看趋势数据');
 
