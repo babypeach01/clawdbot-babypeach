@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * ClawdBot 报送工具（v4 - 总结汇报导向）
+ * ClawdBot 报送工具（v5 - 三次推送体系）
  *
- * 核心工作流：
- *   --card             ⭐ 发送宏观总结卡片到群（原生图表）
- *   --alert            ⭐ 发送重点事项预警到你私信
- *   --push [备注]      ⭐ 手动推送正式报告到群（经你审核后）
- *   --remind 部门名    催办指定部门（@负责人）
+ * ═══ 每日三次推送 ═══
+ *   --morning          早晨总览（总结图 + 可滚动表格链接）
+ *   --check            下午核查（今日到期事项明细 + 私聊部门负责人）
+ *   --evening [备注]   晚上日报（当日完成情况小结）
  *
- * 辅助命令：
+ * ═══ 辅助命令 ═══
  *   --weekly           周五回顾
+ *   --remind 部门名    催办指定部门（@负责人）
  *   --test             连通性测试
  *   --dry-run          预览不发送
  *   --file 文件路径    指定文档源
@@ -64,13 +64,6 @@ async function sendToGroup(title, content) {
   }
 }
 
-async function sendPrivate(userId, title, content) {
-  const result = await dingtalkClient.sendWorkNotification(userId, title, content);
-  if (result) console.log('  ✓ 私信发送成功');
-  else console.error('  ✗ 私信发送失败');
-  return result;
-}
-
 async function sendActionCard(title, content, btnTitle, btnUrl) {
   if (!WEBHOOK) { console.error('  ✗ 未配置 WEBHOOK'); return false; }
   const timestamp = Date.now();
@@ -90,7 +83,12 @@ async function sendActionCard(title, content, btnTitle, btnUrl) {
   }
 }
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+async function sendPrivate(userId, title, content) {
+  const result = await dingtalkClient.sendWorkNotification(userId, title, content);
+  if (result) console.log('  ✓ 私信发送成功');
+  else console.error('  ✗ 私信发送失败');
+  return result;
+}
 
 // ========== 数据加载 ==========
 
@@ -110,28 +108,25 @@ function loadOrParseTaskData() {
   return null;
 }
 
-// ========== 核心命令 ==========
+// ========== 公共：上传可滚动表格 ==========
 
-/**
- * 生成看板HTML并上传OSS，返回URL
- */
-async function uploadDashboard(taskData) {
+async function uploadScrollableTable(taskData) {
   const dayjs = require('dayjs');
-  const html = dashboardHtml.generate(taskData);
+  const html = dashboardHtml.generateScrollableTable(taskData);
 
-  // 保存本地副本
+  // 保存本地
   const dataDir = path.join(__dirname, '..', 'data');
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(path.join(dataDir, 'dashboard.html'), html);
-  console.log('  本地副本: data/dashboard.html');
+  fs.writeFileSync(path.join(dataDir, 'table.html'), html);
+  console.log('  本地: data/table.html');
 
   // 上传OSS
   try {
     const date = dayjs().format('YYYY-MM-DD');
     const time = dayjs().format('HHmmss');
-    const key = `dashboard/${date}/board-${time}.html`;
+    const key = `table/${date}/detail-${time}.html`;
     const url = await ossUploader.uploadFile(key, Buffer.from(html, 'utf8'), 'text/html; charset=utf-8');
-    console.log(`  看板已上传: ${url}`);
+    console.log(`  表格已上传: ${url}`);
     return url;
   } catch (e) {
     console.log(`  OSS上传失败: ${e.message}（可用本地文件查看）`);
@@ -139,40 +134,57 @@ async function uploadDashboard(taskData) {
   }
 }
 
+async function uploadDashboard(taskData) {
+  const dayjs = require('dayjs');
+  const html = dashboardHtml.generate(taskData);
+  const dataDir = path.join(__dirname, '..', 'data');
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'dashboard.html'), html);
+
+  try {
+    const date = dayjs().format('YYYY-MM-DD');
+    const time = dayjs().format('HHmmss');
+    const key = `dashboard/${date}/board-${time}.html`;
+    const url = await ossUploader.uploadFile(key, Buffer.from(html, 'utf8'), 'text/html; charset=utf-8');
+    return url;
+  } catch (e) {
+    return '';
+  }
+}
+
+// ========== 核心命令 ==========
+
 /**
- * --card: 每日总览 → 群
- * 一张总览图（PNG）+ 简短文字 + 看板链接按钮
+ * --morning: 早晨总览
+ * 总览图（PNG）+ 文字概括 + 可滚动表格链接
  */
-async function cmdCard(taskData, dryRun) {
-  console.log('\n📊 每日总览 → 群');
-  console.log('─'.repeat(40));
+async function cmdMorning(taskData, dryRun) {
+  console.log('\n☀️  早晨总览');
+  console.log('═'.repeat(40));
 
   // 1. 生成总览图
   console.log('  生成总览图...');
   const chartBuf = await chartGenerator.overviewChart(taskData);
   let chartUrl = '';
   if (chartBuf) {
-    // 保存本地
     const chartsDir = path.join(__dirname, '..', 'data', 'charts');
     if (!fs.existsSync(chartsDir)) fs.mkdirSync(chartsDir, { recursive: true });
     fs.writeFileSync(path.join(chartsDir, 'overview.png'), chartBuf);
     console.log('  本地: data/charts/overview.png');
-    // 上传OSS
     try {
       chartUrl = await chartGenerator.uploadToOss(chartBuf, 'overview');
       if (chartUrl) console.log(`  图片: ${chartUrl}`);
     } catch (e) { console.log(`  OSS上传失败: ${e.message}`); }
   }
 
-  // 2. 生成看板
-  console.log('  生成看板...');
-  const dashUrl = await uploadDashboard(taskData);
+  // 2. 生成可滚动表格
+  console.log('  生成明细表格...');
+  const tableUrl = await uploadScrollableTable(taskData);
 
-  // 3. 构建消息：图片 + 简短文字
-  const { title, text } = messageTemplates.generateDailySummary(taskData, dashUrl);
+  // 3. 构建消息
+  const { title, text } = messageTemplates.generateMorningSummary(taskData, tableUrl);
   let msgText = text;
   if (chartUrl) {
-    // 在开头插入图片
     msgText = `![总览](${chartUrl})\n\n${text}`;
   }
 
@@ -182,60 +194,127 @@ async function cmdCard(taskData, dryRun) {
 
   if (dryRun) return true;
 
-  if (dashUrl) {
-    return sendActionCard(title, msgText, '📋 查看明细 · 可调整状态', dashUrl);
+  if (tableUrl) {
+    return sendActionCard(title, msgText, '📋 查看明细表（可左右滑动）', tableUrl);
   }
   return sendToGroup(title, msgText);
 }
 
 /**
- * --alert: 重点事项预警 → 管理者私信
+ * --check: 下午核查
+ * 推送今日到期事项到群 + 可选私聊各部门负责人
  */
-async function cmdAlert(taskData, dryRun) {
-  console.log('\n⚠️ 重点事项预警 → 你的私信');
-  console.log('─'.repeat(40));
+async function cmdCheck(taskData, dryRun) {
+  console.log('\n🔍 下午核查');
+  console.log('═'.repeat(40));
 
-  const alertMsg = messageTemplates.generatePrivateAlert(taskData);
-  if (!alertMsg) {
-    console.log('  ✅ 当前无异常，不需要预警');
-    return true;
-  }
+  const result = messageTemplates.generateAfternoonCheck(taskData);
 
-  console.log(alertMsg.text);
+  console.log(result.text);
   console.log('─'.repeat(40));
 
   if (dryRun) {
+    if (result.items && result.items.length > 0) {
+      // 展示哪些部门负责人会收到私聊
+      const deptOwners = {};
+      for (const item of result.items) {
+        if (item.deptOwner) {
+          if (!deptOwners[item.dept]) deptOwners[item.dept] = { owner: item.deptOwner, tasks: [] };
+          deptOwners[item.dept].tasks.push(item);
+        }
+      }
+      if (Object.keys(deptOwners).length > 0) {
+        console.log('\n  将私聊以下部门负责人：');
+        for (const [dept, info] of Object.entries(deptOwners)) {
+          console.log(`    ${dept} → ${info.owner}（${info.tasks.length}项）`);
+        }
+      }
+    }
     console.log('  (预览模式)');
     return true;
   }
 
-  const adminUserId = config.alert.adminUserId;
-  if (!adminUserId || adminUserId === 'your_admin_user_id') {
-    console.error('  ✗ 未配置 ADMIN_USER_ID，无法发私信');
-    console.log('  降级：发送到群');
-    return sendToGroup(alertMsg.title, alertMsg.text);
+  // 发群消息
+  await sendToGroup(result.title, result.text);
+
+  // 私聊各部门负责人
+  if (result.items && result.items.length > 0) {
+    const deptOwners = {};
+    for (const item of result.items) {
+      if (item.deptOwner) {
+        if (!deptOwners[item.dept]) deptOwners[item.dept] = { owner: item.deptOwner, tasks: [] };
+        deptOwners[item.dept].tasks.push(item);
+      }
+    }
+
+    const dayjs = require('dayjs');
+    for (const [dept, info] of Object.entries(deptOwners)) {
+      console.log(`\n  私聊 ${dept} → ${info.owner}...`);
+      const reminder = messageTemplates.generateDeptReminder(dept, info.tasks);
+      // 通过群机器人@对方（钉钉webhook支持atUserIds）
+      if (!WEBHOOK) continue;
+      const timestamp = Date.now();
+      let url = WEBHOOK;
+      if (SECRET) url += `&timestamp=${timestamp}&sign=${sign(timestamp, SECRET)}`;
+      try {
+        await axios.post(url, {
+          msgtype: 'markdown',
+          markdown: { title: reminder.title, text: reminder.text },
+          at: { atUserIds: [info.owner], isAtAll: false },
+        });
+        console.log(`  ✓ 已@${info.owner}`);
+      } catch (e) {
+        console.log(`  ✗ 发送失败: ${e.message}`);
+      }
+    }
   }
 
-  return sendPrivate(adminUserId, alertMsg.title, alertMsg.text);
+  return true;
 }
 
 /**
- * --push [备注]: 正式闭环报送 → 群（管理者手动触发）
+ * --evening [备注]: 晚上日报
+ * 当日完成情况总结 + 可滚动表格链接
  */
-async function cmdPush(taskData, notes, dryRun) {
-  console.log('\n📋 正式报告 → 群（手动推送）');
-  console.log('─'.repeat(40));
+async function cmdEvening(taskData, extraNotes, dryRun) {
+  console.log('\n🌙 晚间日报');
+  console.log('═'.repeat(40));
 
-  const report = messageTemplates.generateFormalReport(taskData, notes);
-  console.log(report.text);
-  console.log('─'.repeat(40));
-
-  if (dryRun) {
-    console.log('  (预览模式)');
-    return true;
+  // 1. 生成总览图
+  console.log('  生成总览图...');
+  const chartBuf = await chartGenerator.overviewChart(taskData);
+  let chartUrl = '';
+  if (chartBuf) {
+    const chartsDir = path.join(__dirname, '..', 'data', 'charts');
+    if (!fs.existsSync(chartsDir)) fs.mkdirSync(chartsDir, { recursive: true });
+    fs.writeFileSync(path.join(chartsDir, 'overview-evening.png'), chartBuf);
+    try {
+      chartUrl = await chartGenerator.uploadToOss(chartBuf, 'overview-evening');
+      if (chartUrl) console.log(`  图片: ${chartUrl}`);
+    } catch (e) { console.log(`  OSS上传失败: ${e.message}`); }
   }
 
-  return sendToGroup(report.title, report.text);
+  // 2. 生成表格
+  console.log('  生成明细表格...');
+  const tableUrl = await uploadScrollableTable(taskData);
+
+  // 3. 构建消息
+  const { title, text } = messageTemplates.generateEveningSummary(taskData, tableUrl, extraNotes);
+  let msgText = text;
+  if (chartUrl) {
+    msgText = `![总览](${chartUrl})\n\n${text}`;
+  }
+
+  console.log('─'.repeat(40));
+  console.log(msgText);
+  console.log('─'.repeat(40));
+
+  if (dryRun) return true;
+
+  if (tableUrl) {
+    return sendActionCard(title, msgText, '📋 查看完整明细', tableUrl);
+  }
+  return sendToGroup(title, msgText);
 }
 
 /**
@@ -245,20 +324,35 @@ async function cmdRemind(taskData, deptName, dryRun) {
   console.log(`\n📌 催办 → ${deptName}`);
   console.log('─'.repeat(40));
 
-  const reminder = messageTemplates.generateReminder(taskData, deptName);
-  if (!reminder) {
-    console.log(`  未找到部门「${deptName}」或该部门无异常事项`);
+  const dayjs = require('dayjs');
+  const today = dayjs();
+  const dept = taskData.departments.find(d =>
+    d.department.includes(deptName) || d.department.replace(/\s+/g, '').includes(deptName)
+  );
+  if (!dept) {
+    console.log(`  未找到部门「${deptName}」`);
     return false;
   }
 
-  console.log(reminder.text);
-  console.log('─'.repeat(40));
+  const items = (dept.tasks || []).filter(t => {
+    if (t.isCompleted) return false;
+    if (!t.deadline) return t.statusKey === 'blocked' || t.statusKey === 'pending_response';
+    return dayjs(t.deadline).diff(today, 'day') <= 0;
+  }).map(t => ({
+    title: t.title,
+    overdueDays: t.deadline ? Math.max(0, today.diff(dayjs(t.deadline), 'day')) : 0,
+  }));
 
-  if (dryRun) {
-    console.log('  (预览模式)');
+  if (items.length === 0) {
+    console.log(`  ${deptName} 当前无紧急事项`);
     return true;
   }
 
+  const shortName = dept.department.replace(/\s+租车\/用车\/租机/, '').replace(/\s+/, '').slice(0, 8);
+  const reminder = messageTemplates.generateDeptReminder(shortName, items);
+  console.log(reminder.text);
+
+  if (dryRun) return true;
   return sendToGroup(reminder.title, reminder.text);
 }
 
@@ -276,6 +370,12 @@ async function cmdWeekly(taskData, dryRun) {
   return sendToGroup(title, text);
 }
 
+// ========== 兼容旧命令 ==========
+
+async function cmdCard(taskData, dryRun) {
+  return cmdMorning(taskData, dryRun);
+}
+
 // ========== 主逻辑 ==========
 
 async function main() {
@@ -283,7 +383,7 @@ async function main() {
   const dryRun = args.includes('--dry-run');
 
   console.log('════════════════════════════════════════');
-  console.log('  ClawdBot 报送工具 v4（总结汇报导向）');
+  console.log('  ClawdBot 报送工具 v5（三次推送体系）');
   console.log('════════════════════════════════════════');
 
   if (dryRun) console.log('  ⚡ 预览模式\n');
@@ -318,23 +418,23 @@ async function main() {
   console.log(`已加载: ${summary.totalTasks}事项 ${taskData.departments.length}部门 | 待办${summary.totalTasks - summary.completedTasks} 完成${summary.completedTasks}\n`);
 
   // 执行命令
-  if (args.includes('--dashboard')) {
-    // 只生成看板，不发消息
+  if (args.includes('--morning')) {
+    await cmdMorning(taskData, dryRun);
+  } else if (args.includes('--check')) {
+    await cmdCheck(taskData, dryRun);
+  } else if (args.includes('--evening')) {
+    const evIdx = args.indexOf('--evening');
+    const notes = args.slice(evIdx + 1).filter(a => !a.startsWith('--')).join(' ');
+    await cmdEvening(taskData, notes, dryRun);
+  } else if (args.includes('--card')) {
+    // 兼容旧命令
+    await cmdCard(taskData, dryRun);
+  } else if (args.includes('--dashboard')) {
     console.log('\n📊 生成交互式看板...');
     const url = await uploadDashboard(taskData);
-    console.log('\n看板已生成:');
+    console.log(`\n看板已生成:`);
     if (url) console.log(`  OSS: ${url}`);
     console.log(`  本地: data/dashboard.html`);
-    console.log('\n用浏览器打开查看，点击部门可展开任务明细');
-    return;
-  } else if (args.includes('--card')) {
-    await cmdCard(taskData, dryRun);
-  } else if (args.includes('--alert')) {
-    await cmdAlert(taskData, dryRun);
-  } else if (args.includes('--push')) {
-    const pushIdx = args.indexOf('--push');
-    const notes = args.slice(pushIdx + 1).filter(a => !a.startsWith('--')).join(' ');
-    await cmdPush(taskData, notes, dryRun);
   } else if (args.includes('--remind')) {
     const remindIdx = args.indexOf('--remind');
     const deptName = args[remindIdx + 1];
@@ -347,20 +447,22 @@ async function main() {
     await cmdWeekly(taskData, dryRun);
   } else {
     // 无参数：显示帮助
-    console.log('用法：');
-    console.log('  --card             ⭐ 发送总结卡片+看板链接到群');
-    console.log('  --dashboard        生成交互式看板（不发消息，本地查看）');
-    console.log('  --alert            发送重点事项预警到你私信');
-    console.log('  --push [备注]      手动推送正式报告到群');
-    console.log('  --remind 部门名    催办指定部门（@负责人）');
+    console.log('每日三次推送：');
+    console.log('  --morning          ☀️  早晨总览（大图+表格链接）');
+    console.log('  --check            🔍 下午核查（到期事项+@部门负责人）');
+    console.log('  --evening [备注]   🌙 晚间日报（完成情况+重点备注）');
+    console.log('');
+    console.log('辅助命令：');
+    console.log('  --remind 部门名    催办指定部门');
     console.log('  --weekly           周五回顾');
+    console.log('  --dashboard        生成交互式看板');
     console.log('  --test             连通性测试');
     console.log('  --dry-run          预览不发送');
-    console.log('\n看板功能：');
-    console.log('  点击部门 → 展开任务明细');
-    console.log('  ✓ 按钮 → 标记完成/未完成');
-    console.log('  — 按钮 → 排除/纳入统计');
-    console.log('  实时重算达成率');
+    console.log('');
+    console.log('示例：');
+    console.log('  node scripts/local-send.js --morning --dry-run');
+    console.log('  node scripts/local-send.js --check');
+    console.log('  node scripts/local-send.js --evening 老板要求加速XX项目');
   }
 }
 

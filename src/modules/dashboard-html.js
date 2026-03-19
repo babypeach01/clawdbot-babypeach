@@ -336,9 +336,214 @@ render();
 </html>`;
   }
 
+  /**
+   * 生成可左右滑动的明细表格页面
+   * 手机友好，横向滚动，原生滚动条
+   */
+  generateScrollableTable(taskData) {
+    const today = dayjs();
+    const dateStr = today.format('M月D日');
+    const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.day()];
+    const { departments } = taskData;
+
+    // 扁平化所有任务
+    const rows = [];
+    for (const dept of departments) {
+      for (const task of dept.tasks || []) {
+        const dl = task.deadline ? dayjs(task.deadline) : null;
+        let urgency = '';
+        let urgencyClass = '';
+        if (task.isCompleted) {
+          urgency = '已完成';
+          urgencyClass = 'u-done';
+        } else if (task.statusKey === 'blocked') {
+          urgency = '阻塞';
+          urgencyClass = 'u-blocked';
+        } else if (dl && dl.isBefore(today, 'day')) {
+          const days = today.diff(dl, 'day');
+          urgency = `逾期${days}天`;
+          urgencyClass = 'u-overdue';
+        } else if (dl && dl.isSame(today, 'day')) {
+          urgency = '今日到期';
+          urgencyClass = 'u-today';
+        } else if (dl) {
+          const days = dl.diff(today, 'day');
+          urgency = `剩${days}天`;
+          urgencyClass = days <= 3 ? 'u-soon' : 'u-ok';
+        } else {
+          urgency = '无截止日';
+          urgencyClass = 'u-none';
+        }
+
+        rows.push({
+          dept: this._short(dept.department),
+          title: task.title || '',
+          owner: task.owner || dept.owner || '',
+          status: task.status || '',
+          statusKey: task.statusKey || '',
+          deadline: dl ? dl.format('M/D') : '-',
+          urgency,
+          urgencyClass,
+          notes: task.notes || '',
+          isCompleted: task.isCompleted,
+        });
+      }
+    }
+
+    // 按紧急程度排序：阻塞 > 逾期 > 今日到期 > 即将到期 > 其他 > 已完成
+    const urgencyOrder = { 'u-blocked': 0, 'u-overdue': 1, 'u-today': 2, 'u-soon': 3, 'u-ok': 4, 'u-none': 5, 'u-done': 6 };
+    rows.sort((a, b) => (urgencyOrder[a.urgencyClass] || 5) - (urgencyOrder[b.urgencyClass] || 5));
+
+    const rowsHtml = rows.map((r, i) => {
+      const cls = r.isCompleted ? 'row-done' : '';
+      return `<tr class="${cls}">
+        <td class="col-idx">${i + 1}</td>
+        <td class="col-dept">${this._esc(r.dept)}</td>
+        <td class="col-title">${this._esc(r.title)}</td>
+        <td class="col-owner">${this._esc(r.owner)}</td>
+        <td class="col-status"><span class="st st-${r.statusKey}">${this._esc(r.status)}</span></td>
+        <td class="col-dl">${r.deadline}</td>
+        <td class="col-urgency"><span class="${r.urgencyClass}">${r.urgency}</span></td>
+      </tr>`;
+    }).join('\n');
+
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>事项明细 · ${dateStr}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"PingFang SC","SF Pro Text","Helvetica Neue",sans-serif;background:#F5F6F8;color:#1a1a2e;-webkit-font-smoothing:antialiased}
+
+.header{background:#FFF;padding:16px 20px;border-bottom:1px solid #E5E7EB;position:sticky;top:0;z-index:10}
+.header h1{font-size:17px;font-weight:700}
+.header .sub{font-size:13px;color:#6B7280;margin-top:2px}
+
+.hint{padding:10px 20px;font-size:12px;color:#9CA3AF;background:#FFF;border-bottom:1px solid #F3F4F6}
+.hint span{color:#3B82F6}
+
+/* 表格容器：左右可滚动 */
+.table-wrap{
+  overflow-x:auto;
+  -webkit-overflow-scrolling:touch;
+  background:#FFF;
+  margin:0;
+  padding-bottom:80px;
+}
+
+/* 滚动条样式 */
+.table-wrap::-webkit-scrollbar{height:6px}
+.table-wrap::-webkit-scrollbar-track{background:#F3F4F6}
+.table-wrap::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:3px}
+
+table{
+  width:max-content;
+  min-width:100%;
+  border-collapse:collapse;
+  font-size:14px;
+}
+
+thead{position:sticky;top:0;z-index:5}
+th{
+  background:#F8FAFC;
+  color:#374151;
+  font-weight:600;
+  font-size:13px;
+  padding:12px 14px;
+  text-align:left;
+  white-space:nowrap;
+  border-bottom:2px solid #E5E7EB;
+  position:sticky;top:0;
+}
+td{
+  padding:11px 14px;
+  border-bottom:1px solid #F3F4F6;
+  white-space:nowrap;
+  vertical-align:middle;
+}
+tr:active{background:#F9FAFB}
+
+/* 列宽 */
+.col-idx{width:36px;color:#9CA3AF;font-size:12px;text-align:center}
+.col-dept{min-width:80px;font-weight:600;color:#374151}
+.col-title{min-width:200px;max-width:320px;white-space:normal;word-break:break-all;font-size:14px;line-height:1.4}
+.col-owner{min-width:70px;color:#6B7280}
+.col-status{min-width:70px}
+.col-dl{min-width:60px;color:#6B7280}
+.col-urgency{min-width:80px;font-weight:600;font-size:13px}
+
+/* 状态标签 */
+.st{font-size:12px;padding:2px 8px;border-radius:4px;font-weight:500}
+.st-in_progress{background:#DBEAFE;color:#2563EB}
+.st-blocked{background:#FEE2E2;color:#DC2626}
+.st-pending_response{background:#FEF3C7;color:#D97706}
+.st-on_hold{background:#F3F4F6;color:#6B7280}
+.st-completed{background:#D1FAE5;color:#059669}
+.st-not_started{background:#F3F4F6;color:#9CA3AF}
+
+/* 紧急程度颜色 */
+.u-blocked{color:#DC2626}
+.u-overdue{color:#DC2626}
+.u-today{color:#D97706;background:#FEF3C7;padding:2px 6px;border-radius:4px}
+.u-soon{color:#D97706}
+.u-ok{color:#059669}
+.u-none{color:#9CA3AF}
+.u-done{color:#059669}
+
+.row-done td{opacity:0.45;text-decoration:line-through}
+.row-done .col-idx,.row-done .col-urgency{text-decoration:none}
+
+.foot{text-align:center;padding:20px;font-size:11px;color:#9CA3AF;position:fixed;bottom:0;left:0;right:0;background:rgba(245,246,248,0.95)}
+
+@media(max-width:480px){
+  th,td{padding:9px 10px;font-size:13px}
+  .col-title{min-width:160px}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>事项明细表</h1>
+  <div class="sub">${dateStr} ${weekday} · 共${rows.length}项</div>
+</div>
+<div class="hint">👈 <span>左右滑动</span> 查看更多列</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>部门</th>
+        <th>事项名称</th>
+        <th>负责人</th>
+        <th>状态</th>
+        <th>截止日</th>
+        <th>紧急程度</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rowsHtml}
+    </tbody>
+  </table>
+</div>
+
+<div class="foot">ClawdBot · ${today.format('YYYY-MM-DD HH:mm')}</div>
+
+</body>
+</html>`;
+  }
+
   _short(name) {
     if (!name) return '未分类';
     return name.replace(/\s+租车\/用车\/租机/, '').replace(/\s+/, '').slice(0, 8);
+  }
+
+  _esc(s) {
+    if (!s) return '';
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 }
 

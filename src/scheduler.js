@@ -1,12 +1,12 @@
 /**
- * 定时任务调度器（v3 - 总结汇报导向）
+ * 定时任务调度器（v4 - 三次推送体系）
  *
  * 工作流：
- *   10:00  宏观总结卡片 → 群（互动卡片+原生图表）
- *   17:00  重点事项预警 → 管理者私信（管理者审核后手动推送）
- *   周五18:00  周回顾 → 群
- *
- * 数据刷新：每天 09:30 自动从钉钉文档拉取最新数据
+ *   09:30  数据刷新（从钉钉文档拉取）
+ *   10:00  早晨总览 → 群（总览图+可滚动表格链接）
+ *   14:00  下午核查 → 群（今日到期事项+@部门负责人）
+ *   19:00  晚间日报 → 群（当日完成情况小结）
+ *   周五19:00 → 周回顾替代日报
  */
 const cron = require('node-cron');
 const dayjs = require('dayjs');
@@ -14,8 +14,10 @@ const config = require('./config');
 const dingtalk = require('./modules/dingtalk-client');
 const taskParser = require('./modules/task-parser');
 const aiAnalyzer = require('./modules/ai-analyzer');
-const reportGenerator = require('./modules/report-generator');
 const messageTemplates = require('./modules/message-templates');
+const chartGenerator = require('./modules/chart-generator');
+const dashboardHtml = require('./modules/dashboard-html');
+const ossUploader = require('./modules/oss-uploader');
 const dataStore = require('./modules/data-store');
 const logger = require('./utils/logger');
 
@@ -39,7 +41,6 @@ async function refreshData() {
     }
 
     dataStore.saveLatestTasks(taskData);
-    reportGenerator.saveSnapshot(taskData);
     logger.info(`✓ 数据已更新: ${taskData.summary.totalTasks}事项 ${taskData.departments.length}部门`);
     return taskData;
   } catch (err) {
@@ -49,46 +50,112 @@ async function refreshData() {
 }
 
 /**
- * 10:00 宏观总结卡片 → 群
+ * 上传可滚动表格到OSS
  */
+async function uploadTable(taskData) {
+  try {
+    const html = dashboardHtml.generateScrollableTable(taskData);
+    const date = dayjs().format('YYYY-MM-DD');
+    const time = dayjs().format('HHmmss');
+    const key = `table/${date}/detail-${time}.html`;
+    return await ossUploader.uploadFile(key, Buffer.from(html, 'utf8'), 'text/html; charset=utf-8');
+  } catch (err) {
+    logger.warn(`表格上传失败: ${err.message}`);
+    return '';
+  }
+}
+
+/**
+ * 上传总览图到OSS
+ */
+async function uploadChart(taskData, name = 'overview') {
+  try {
+    const buf = await chartGenerator.overviewChart(taskData);
+    if (!buf) return '';
+    return await chartGenerator.uploadToOss(buf, name);
+  } catch (err) {
+    logger.warn(`图表上传失败: ${err.message}`);
+    return '';
+  }
+}
+
+// ═══ 10:00 早晨总览 ═══
+
 async function sendMorningSummary() {
-  logger.info('📊 发送每日总览...');
+  logger.info('☀️  发送早晨总览...');
   const taskData = dataStore.loadLatestTasks();
   if (!taskData?.departments) { logger.warn('无数据，跳过'); return; }
 
-  const { title, text } = messageTemplates.generateDailySummary(taskData);
-  await dingtalk.sendRobotMessage(title, text);
-  logger.info('✓ 每日总览已发送');
+  const chartUrl = await uploadChart(taskData, 'morning');
+  const tableUrl = await uploadTable(taskData);
+  const { title, text } = messageTemplates.generateMorningSummary(taskData, tableUrl);
+
+  let msgText = text;
+  if (chartUrl) msgText = `![总览](${chartUrl})\n\n${text}`;
+
+  if (tableUrl) {
+    await dingtalk.sendActionCard(title, msgText, '📋 查看明细表（可左右滑动）', tableUrl);
+  } else {
+    await dingtalk.sendRobotMessage(title, msgText);
+  }
+  logger.info('✓ 早晨总览已发送');
 }
 
-/**
- * 17:00 重点事项预警 → 管理者私信
- */
-async function sendPrivateAlert() {
-  logger.info('⚠️ 发送重点事项预警...');
+// ═══ 14:00 下午核查 ═══
+
+async function sendAfternoonCheck() {
+  logger.info('🔍 发送下午核查...');
   const taskData = dataStore.loadLatestTasks();
   if (!taskData?.departments) { logger.warn('无数据，跳过'); return; }
 
-  const alertMsg = messageTemplates.generatePrivateAlert(taskData);
-  if (!alertMsg) { logger.info('✅ 无异常事项'); return; }
+  const result = messageTemplates.generateAfternoonCheck(taskData);
+  await dingtalk.sendRobotMessage(result.title, result.text);
 
-  const adminUserId = config.alert.adminUserId;
-  if (adminUserId && adminUserId !== 'your_admin_user_id') {
-    const ok = await dingtalk.sendWorkNotification(adminUserId, alertMsg.title, alertMsg.text);
-    if (ok) logger.info('✓ 预警已发送给管理者');
-    else logger.error('预警私信发送失败，降级到群消息');
+  // 私聊各部门负责人
+  if (result.items && result.items.length > 0) {
+    const deptOwners = {};
+    for (const item of result.items) {
+      if (item.deptOwner) {
+        if (!deptOwners[item.dept]) deptOwners[item.dept] = { owner: item.deptOwner, tasks: [] };
+        deptOwners[item.dept].tasks.push(item);
+      }
+    }
+
+    for (const [dept, info] of Object.entries(deptOwners)) {
+      const reminder = messageTemplates.generateDeptReminder(dept, info.tasks);
+      // 通过群机器人@部门负责人
+      await dingtalk.sendRobotMessage(reminder.title, reminder.text, [info.owner]);
+      logger.info(`已@${info.owner}（${dept}）`);
+    }
   }
 
-  // 降级：也发到群（管理者可能没配userId）
-  if (!adminUserId || adminUserId === 'your_admin_user_id') {
-    await dingtalk.sendRobotMessage(alertMsg.title, alertMsg.text);
-    logger.info('✓ 预警已发送到群（未配置管理者ID）');
-  }
+  logger.info('✓ 下午核查已发送');
 }
 
-/**
- * 周五 18:00 周回顾 → 群
- */
+// ═══ 19:00 晚间日报 ═══
+
+async function sendEveningSummary() {
+  logger.info('🌙 发送晚间日报...');
+  const taskData = dataStore.loadLatestTasks();
+  if (!taskData?.departments) { logger.warn('无数据，跳过'); return; }
+
+  const chartUrl = await uploadChart(taskData, 'evening');
+  const tableUrl = await uploadTable(taskData);
+  const { title, text } = messageTemplates.generateEveningSummary(taskData, tableUrl);
+
+  let msgText = text;
+  if (chartUrl) msgText = `![总览](${chartUrl})\n\n${text}`;
+
+  if (tableUrl) {
+    await dingtalk.sendActionCard(title, msgText, '📋 查看完整明细', tableUrl);
+  } else {
+    await dingtalk.sendRobotMessage(title, msgText);
+  }
+  logger.info('✓ 晚间日报已发送');
+}
+
+// ═══ 周五回顾 ═══
+
 async function sendWeeklyReview() {
   logger.info('📅 发送周回顾...');
   const taskData = dataStore.loadLatestTasks();
@@ -103,7 +170,7 @@ async function sendWeeklyReview() {
  * 启动定时任务
  */
 function startScheduler() {
-  logger.info('=== ClawdBot 报送系统启动 (v3 总结导向) ===');
+  logger.info('=== ClawdBot 报送系统启动 (v4 三次推送体系) ===');
 
   // 09:30 数据刷新
   cron.schedule('30 9 * * 1-5', () => {
@@ -111,29 +178,34 @@ function startScheduler() {
   });
   logger.info('已注册: 09:30 数据刷新');
 
-  // 10:00 宏观总结卡片 → 群
+  // 10:00 早晨总览
   cron.schedule('0 10 * * 1-5', () => {
-    sendMorningSummary().catch(e => logger.error(`总结卡片失败: ${e.message}`));
+    sendMorningSummary().catch(e => logger.error(`早晨总览失败: ${e.message}`));
   });
-  logger.info('已注册: 10:00 宏观总结卡片');
+  logger.info('已注册: 10:00 早晨总览');
 
-  // 17:00 重点事项预警 → 管理者私信
-  cron.schedule('0 17 * * 1-5', () => {
-    sendPrivateAlert().catch(e => logger.error(`预警失败: ${e.message}`));
+  // 14:00 下午核查
+  cron.schedule('0 14 * * 1-5', () => {
+    sendAfternoonCheck().catch(e => logger.error(`下午核查失败: ${e.message}`));
   });
-  logger.info('已注册: 17:00 重点事项预警');
+  logger.info('已注册: 14:00 下午核查');
 
-  // 周五 18:00 周回顾
-  cron.schedule('0 18 * * 5', () => {
+  // 19:00 晚间日报（周五→周回顾）
+  cron.schedule('0 19 * * 1-4', () => {
+    sendEveningSummary().catch(e => logger.error(`晚间日报失败: ${e.message}`));
+  });
+  logger.info('已注册: 19:00 晚间日报（周一至周四）');
+
+  cron.schedule('0 19 * * 5', () => {
     sendWeeklyReview().catch(e => logger.error(`周回顾失败: ${e.message}`));
   });
-  logger.info('已注册: 周五18:00 周回顾');
+  logger.info('已注册: 周五19:00 周回顾');
 
   logger.info('所有定时任务已注册');
 }
 
 /**
- * 手动执行全流程（API触发用）
+ * 手动执行全流程
  */
 async function runFullCycle(mode = 'manual') {
   logger.info(`====== 手动执行 (${mode}) ======`);
