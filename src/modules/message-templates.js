@@ -343,6 +343,159 @@ class MessageTemplates {
     return { title: `本周回顾 ${weekStart}-${weekEnd}`, text: msg };
   }
 
+  /**
+   * ═══════════════════════════════════════
+   *  互动卡片数据（钉钉原生卡片，用于群内直接展示）
+   *  模板变量：title, content
+   * ═══════════════════════════════════════
+   */
+  generateCardData(taskData, type = 'dashboard') {
+    const today = dayjs();
+    const dateStr = today.format('M/D');
+    const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.day()];
+    const { summary, departments } = taskData;
+    const totalPending = summary.totalTasks - summary.completedTasks;
+
+    if (type === 'morning') {
+      return this._buildMorningCardData(taskData, dateStr, weekday, today);
+    }
+
+    if (type === 'weekly') {
+      return this._buildWeeklyCardData(taskData, dateStr, weekday, today);
+    }
+
+    // 默认：部门看板卡片
+    let content = '';
+
+    // KPI 概览
+    content += `**📋 全局概览**\n\n`;
+    content += `**${summary.totalTasks}** 总事项 ┃ **${totalPending}** 待办 ┃ **${summary.completedTasks}** 已完成\n\n`;
+    content += `🔵推进中 **${summary.inProgressTasks}** ┃ 🟡催办中 **${summary.pendingResponseTasks || 0}** ┃ 🔴阻塞 **${summary.blockedTasks}** ┃ ⏸暂缓 **${summary.onHoldTasks || 0}**\n\n`;
+
+    // 部门排行
+    content += `---\n\n**📊 部门任务排行**\n\n`;
+    const deptSorted = [...departments]
+      .filter(d => (d.pendingCount || 0) + (d.completedCount || 0) > 0)
+      .sort((a, b) => (b.pendingCount || 0) - (a.pendingCount || 0));
+
+    for (const dept of deptSorted) {
+      const name = this._shortDept(dept.department);
+      const pending = dept.pendingCount || 0;
+      const completed = dept.completedCount || 0;
+      const total = pending + completed;
+      const rate = total > 0 ? Math.round((completed / total) * 100) : 0;
+      const statusIcon = rate >= 50 ? '🟢' : rate >= 20 ? '🟡' : '🔴';
+      content += `${statusIcon} **${name}** ┃ 完成率${rate}% ┃ ${pending}待办/${completed}完成\n\n`;
+    }
+
+    // 异常事项
+    const alerts = this._collectAlerts(departments, today);
+    if (alerts.length > 0) {
+      content += `---\n\n**⚠️ 异常事项 (${alerts.length})**\n\n`;
+      for (const a of alerts.slice(0, 6)) {
+        content += `${a.icon} **${a.type}** ┃ ${a.dept} ┃ ${a.title} → ${a.owner}\n\n`;
+      }
+      if (alerts.length > 6) {
+        content += `...还有 ${alerts.length - 6} 项异常\n\n`;
+      }
+    }
+
+    content += `---\n\n*🤖 AI 智能任务跟踪 · ${today.format('HH:mm')}*`;
+
+    return {
+      title: `📊 ${dateStr} ${weekday} · 部门工作看板`,
+      content,
+    };
+  }
+
+  _buildMorningCardData(taskData, dateStr, weekday, today) {
+    const overdue = [];
+    const blocked = [];
+    const urgent = [];
+
+    for (const dept of taskData.departments) {
+      for (const task of dept.tasks) {
+        if (task.isCompleted) continue;
+        if (task.deadline) {
+          const dl = dayjs(task.deadline);
+          if (dl.isBefore(today, 'day')) {
+            overdue.push({ title: this._truncate(task.title, 25), owner: task.owner || dept.owner, days: today.diff(dl, 'day') });
+          }
+        }
+        if (task.statusKey === 'blocked') {
+          blocked.push({ title: this._truncate(task.title, 25), owner: task.owner || dept.owner });
+        }
+        if (task.statusKey === 'pending_response') {
+          urgent.push({ title: this._truncate(task.title, 25), owner: task.owner || dept.owner });
+        }
+      }
+    }
+
+    let content = '';
+    if (overdue.length > 0) {
+      content += `**🔴 逾期 ${overdue.length}项**\n\n`;
+      for (const item of overdue.slice(0, 5)) {
+        content += `${item.title}（逾期${item.days}天）→ ${item.owner}\n\n`;
+      }
+    }
+    if (blocked.length > 0) {
+      content += `**🚫 阻塞 ${blocked.length}项**\n\n`;
+      for (const item of blocked.slice(0, 3)) {
+        content += `${item.title} → ${item.owner}\n\n`;
+      }
+    }
+    if (urgent.length > 0) {
+      content += `**🟡 催办中 ${urgent.length}项**\n\n`;
+      for (const item of urgent.slice(0, 5)) {
+        content += `${item.title} → ${item.owner}\n\n`;
+      }
+    }
+    if (overdue.length === 0 && blocked.length === 0 && urgent.length === 0) {
+      content += `✅ 当前无逾期、阻塞或催办事项\n\n`;
+    }
+    content += `---\n\n📌 请相关负责人今日回复处理方案`;
+
+    return {
+      title: `☀️ ${dateStr} ${weekday} · 今日焦点`,
+      content,
+    };
+  }
+
+  _buildWeeklyCardData(taskData, dateStr, weekday, today) {
+    const { summary, departments } = taskData;
+    const weekStart = today.subtract(4, 'day').format('M/D');
+    const weekEnd = today.format('M/D');
+
+    let content = '';
+    content += `**📋 周末数据快照**\n\n`;
+    content += `总事项 **${summary.totalTasks}** ┃ 待办 **${summary.totalTasks - summary.completedTasks}** ┃ 已完成 **${summary.completedTasks}**\n\n`;
+    content += `🔵推进中 **${summary.inProgressTasks}** ┃ 🟡催办 **${summary.pendingResponseTasks || 0}** ┃ 🔴阻塞 **${summary.blockedTasks}**\n\n`;
+
+    // 部门完成率排行
+    content += `---\n\n**🏆 部门完成率排行**\n\n`;
+    const deptRates = departments
+      .map(d => {
+        const total = (d.pendingCount || 0) + (d.completedCount || 0);
+        const rate = total > 0 ? Math.round(((d.completedCount || 0) / total) * 100) : 0;
+        return { name: this._shortDept(d.department), rate, completed: d.completedCount || 0, pending: d.pendingCount || 0 };
+      })
+      .filter(d => d.completed + d.pending > 0)
+      .sort((a, b) => b.rate - a.rate);
+
+    for (let i = 0; i < deptRates.length; i++) {
+      const d = deptRates[i];
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '　';
+      content += `${medal} ${d.name} **${d.rate}%** (${d.completed}/${d.completed + d.pending})\n\n`;
+    }
+
+    content += `---\n\n*🤖 周报自动生成 ${today.format('HH:mm')}*`;
+
+    return {
+      title: `📅 本周回顾 ${weekStart}-${weekEnd}`,
+      content,
+    };
+  }
+
   // ── 内部工具函数 ──
 
   _collectAlerts(departments, today) {

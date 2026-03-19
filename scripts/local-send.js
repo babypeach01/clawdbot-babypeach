@@ -10,6 +10,9 @@
  *   node scripts/local-send.js --detail           # 只发 [3/5] 事项明细表
  *   node scripts/local-send.js --urgent           # 只发 [4/5] 催办提醒（逐条）
  *   node scripts/local-send.js --weekly           # 只发 [5/5] 周五回顾
+ *   node scripts/local-send.js --card              # 发送钉钉互动卡片（原生嵌入式）
+ *   node scripts/local-send.js --card morning      # 互动卡片-晨报焦点
+ *   node scripts/local-send.js --card weekly        # 互动卡片-周回顾
  *   node scripts/local-send.js --test             # 发送测试消息（验证连通性）
  *   node scripts/local-send.js --dry-run          # 预览所有消息，不实际发送
  *   node scripts/local-send.js --file 文件路径     # 指定文档文件后发送
@@ -26,6 +29,9 @@ const taskParser = require('../src/modules/task-parser');
 const chartGenerator = require('../src/modules/chart-generator');
 const dashboardHtml = require('../src/modules/dashboard-html');
 const ossUploader = require('../src/modules/oss-uploader');
+
+const dingtalkClient = require('../src/modules/dingtalk-client');
+const config = require('../src/config');
 
 const WEBHOOK = process.env.DINGTALK_ROBOT_WEBHOOK;
 const SECRET = process.env.DINGTALK_ROBOT_SECRET;
@@ -368,6 +374,52 @@ async function _buildDashboardForPreview(taskData, dryRun) {
   }
 }
 
+/**
+ * 发送钉钉互动卡片（原生嵌入式卡片）
+ */
+async function sendInteractiveCard(taskData, cardType, dryRun) {
+  console.log(`\n🎴 互动卡片（${cardType}）`);
+  console.log('─'.repeat(40));
+
+  const cardTemplateId = config.dingtalk.cardTemplateId;
+  if (!cardTemplateId) {
+    console.error('  ✗ 未配置 DINGTALK_CARD_TEMPLATE_ID，请在 .env 中添加');
+    return false;
+  }
+
+  const cardData = messageTemplates.generateCardData(taskData, cardType);
+  console.log(`  标题: ${cardData.title}`);
+  console.log(`  内容预览:\n${cardData.content.slice(0, 500)}`);
+  console.log('─'.repeat(40));
+
+  if (dryRun) {
+    console.log('  (预览模式，不实际发送)');
+    return true;
+  }
+
+  const outTrackId = `clawdbot-${cardType}-${Date.now()}`;
+  const options = {};
+
+  if (config.dingtalk.openConversationId) {
+    options.openConversationId = config.dingtalk.openConversationId;
+  }
+
+  const result = await dingtalkClient.sendInteractiveCard(
+    cardTemplateId,
+    outTrackId,
+    cardData,
+    options
+  );
+
+  if (result.success) {
+    console.log('  ✓ 互动卡片发送成功!');
+    console.log(`  outTrackId: ${outTrackId}`);
+  } else {
+    console.error(`  ✗ 互动卡片发送失败: ${result.error}`);
+  }
+  return result.success;
+}
+
 // ========== 主逻辑 ==========
 
 async function main() {
@@ -382,8 +434,9 @@ async function main() {
   const sendDetail = args.includes('--detail');
   const sendUrg = args.includes('--urgent');
   const sendWeek = args.includes('--weekly');
+  const sendCard = args.includes('--card');
   const previewAll = args.includes('--preview-all');
-  const sendAll = !sendMorning && !sendDash && !sendDetail && !sendUrg && !sendWeek && !previewAll;
+  const sendAll = !sendMorning && !sendDash && !sendDetail && !sendUrg && !sendWeek && !sendCard && !previewAll;
 
   console.log('========================================');
   console.log('  ClawdBot 催办发送工具 v3');
@@ -536,6 +589,14 @@ async function main() {
   if (sendWeek) {
     totalCount++;
     if (await sendWeeklyReview(taskData, dryRun)) successCount++;
+  }
+
+  if (sendCard) {
+    // 确定卡片类型：--card 后面可跟 morning/weekly，默认 dashboard
+    const cardIdx = args.indexOf('--card');
+    const cardType = args[cardIdx + 1] && !args[cardIdx + 1].startsWith('--') ? args[cardIdx + 1] : 'dashboard';
+    totalCount++;
+    if (await sendInteractiveCard(taskData, cardType, dryRun)) successCount++;
   }
 
   // 总结

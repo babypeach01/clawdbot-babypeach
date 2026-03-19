@@ -177,7 +177,7 @@ class DingTalkClient {
       }
 
       const res = await axios.post(
-        `${this.newApiBase}/v1.0/im/v1.0/robot/interactiveCards/send`,
+        `${this.newApiBase}/v1.0/im/robot/interactiveCards/send`,
         payload,
         {
           headers: {
@@ -206,7 +206,7 @@ class DingTalkClient {
       const token = await this.getAccessToken();
 
       const res = await axios.put(
-        `${this.newApiBase}/v1.0/im/v1.0/robot/interactiveCards`,
+        `${this.newApiBase}/v1.0/im/robot/interactiveCards`,
         {
           outTrackId,
           cardData: {
@@ -240,7 +240,7 @@ class DingTalkClient {
       const token = await this.getAccessToken();
 
       const res = await axios.post(
-        `${this.newApiBase}/v1.0/im/v1.0/robot/interactiveCards/callbackUrls`,
+        `${this.newApiBase}/v1.0/im/robot/interactiveCards/callbackUrls`,
         { callbackUrl, callbackRouteKey },
         {
           headers: {
