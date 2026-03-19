@@ -22,6 +22,8 @@ const axios = require('axios');
 
 const messageTemplates = require('../src/modules/message-templates');
 const taskParser = require('../src/modules/task-parser');
+const dashboardHtml = require('../src/modules/dashboard-html');
+const ossUploader = require('../src/modules/oss-uploader');
 const dingtalkClient = require('../src/modules/dingtalk-client');
 const config = require('../src/config');
 
@@ -68,6 +70,25 @@ async function sendPrivate(userId, title, content) {
   return result;
 }
 
+async function sendActionCard(title, content, btnTitle, btnUrl) {
+  if (!WEBHOOK) { console.error('  ✗ 未配置 WEBHOOK'); return false; }
+  const timestamp = Date.now();
+  let url = WEBHOOK;
+  if (SECRET) url += `&timestamp=${timestamp}&sign=${sign(timestamp, SECRET)}`;
+  try {
+    const res = await axios.post(url, {
+      msgtype: 'actionCard',
+      actionCard: { title, text: content, singleTitle: btnTitle, singleURL: btnUrl, btnOrientation: '0' },
+    });
+    if (res.data.errcode === 0) { console.log('  ✓ ActionCard发送成功'); return true; }
+    console.error('  ✗ 失败:', res.data.errmsg);
+    return false;
+  } catch (e) {
+    console.error('  ✗ 异常:', e.response?.data || e.message);
+    return false;
+  }
+}
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ========== 数据加载 ==========
@@ -91,18 +112,62 @@ function loadOrParseTaskData() {
 // ========== 核心命令 ==========
 
 /**
- * --card: 宏观总结卡片 → 群（互动卡片 + 原生图表）
+ * 生成看板HTML并上传OSS，返回URL
+ */
+async function uploadDashboard(taskData) {
+  const dayjs = require('dayjs');
+  const html = dashboardHtml.generate(taskData);
+
+  // 保存本地副本
+  const dataDir = path.join(__dirname, '..', 'data');
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'dashboard.html'), html);
+  console.log('  本地副本: data/dashboard.html');
+
+  // 上传OSS
+  try {
+    const date = dayjs().format('YYYY-MM-DD');
+    const time = dayjs().format('HHmmss');
+    const key = `dashboard/${date}/board-${time}.html`;
+    const url = await ossUploader.uploadFile(key, Buffer.from(html, 'utf8'), 'text/html; charset=utf-8');
+    console.log(`  看板已上传: ${url}`);
+    return url;
+  } catch (e) {
+    console.log(`  OSS上传失败: ${e.message}（可用本地文件查看）`);
+    return '';
+  }
+}
+
+/**
+ * --card: 宏观总结卡片 → 群（互动卡片 + 看板链接）
  */
 async function cmdCard(taskData, dryRun) {
   console.log('\n📊 宏观总结卡片 → 群');
   console.log('─'.repeat(40));
 
+  // 1. 生成并上传交互式看板
+  console.log('  生成交互式看板...');
+  const dashUrl = await uploadDashboard(taskData);
+
   const cardTemplateId = config.dingtalk.cardTemplateId;
   if (!cardTemplateId) {
-    console.error('  ✗ 未配置 DINGTALK_CARD_TEMPLATE_ID');
-    return false;
+    // 无卡片模板 → 用ActionCard替代（带看板链接按钮）
+    console.log('  未配置卡片模板，使用ActionCard');
+    const cardData = messageTemplates.generateCardData(taskData);
+    let text = `## ${cardData.title}\n\n`;
+    text += `> 达成率 **${cardData.completionRate}** ┃ 待办 **${cardData.pendingCount}** ┃ 已完成 **${cardData.completedCount}**\n\n`;
+    text += `${cardData.alerts}\n\n`;
+    text += `---\n\n*点击下方按钮查看详细看板，可按部门下钻查看明细*`;
+
+    if (dryRun) { console.log(text); return true; }
+
+    if (dashUrl) {
+      return sendActionCard(cardData.title, text, '📊 查看交互式看板', dashUrl);
+    }
+    return sendToGroup(cardData.title, text);
   }
 
+  // 有卡片模板
   const cardData = messageTemplates.generateCardData(taskData);
   const cardParamMap = {
     title: cardData.title,
@@ -112,11 +177,12 @@ async function cmdCard(taskData, dryRun) {
     chartData: JSON.stringify(cardData.chartData),
     alerts: cardData.alerts,
   };
+  if (dashUrl) cardParamMap.dashboardUrl = dashUrl;
 
   console.log(`  标题: ${cardData.title}`);
   console.log(`  完成率: ${cardData.completionRate} | 待办: ${cardData.pendingCount} | 已完成: ${cardData.completedCount}`);
   console.log(`  图表: ${cardData.chartData.data.length} 个部门`);
-  console.log(`  摘要: ${cardData.alerts}`);
+  if (dashUrl) console.log(`  看板: ${dashUrl}`);
 
   if (dryRun) {
     console.log('\n  (预览模式)');
@@ -265,7 +331,16 @@ async function main() {
   console.log(`已加载: ${summary.totalTasks}事项 ${taskData.departments.length}部门 | 待办${summary.totalTasks - summary.completedTasks} 完成${summary.completedTasks}\n`);
 
   // 执行命令
-  if (args.includes('--card')) {
+  if (args.includes('--dashboard')) {
+    // 只生成看板，不发消息
+    console.log('\n📊 生成交互式看板...');
+    const url = await uploadDashboard(taskData);
+    console.log('\n看板已生成:');
+    if (url) console.log(`  OSS: ${url}`);
+    console.log(`  本地: data/dashboard.html`);
+    console.log('\n用浏览器打开查看，点击部门可展开任务明细');
+    return;
+  } else if (args.includes('--card')) {
     await cmdCard(taskData, dryRun);
   } else if (args.includes('--alert')) {
     await cmdAlert(taskData, dryRun);
@@ -286,18 +361,19 @@ async function main() {
   } else {
     // 无参数：显示帮助
     console.log('用法：');
-    console.log('  --card             发送宏观总结卡片到群（原生图表）');
+    console.log('  --card             ⭐ 发送总结卡片+看板链接到群');
+    console.log('  --dashboard        生成交互式看板（不发消息，本地查看）');
     console.log('  --alert            发送重点事项预警到你私信');
     console.log('  --push [备注]      手动推送正式报告到群');
     console.log('  --remind 部门名    催办指定部门（@负责人）');
     console.log('  --weekly           周五回顾');
     console.log('  --test             连通性测试');
-    console.log('  --dry-run          任意命令前加，预览不发送');
-    console.log('\n示例：');
-    console.log('  node scripts/local-send.js --card');
-    console.log('  node scripts/local-send.js --alert');
-    console.log('  node scripts/local-send.js --push 今日各部门进展正常，资产部需加快推进');
-    console.log('  node scripts/local-send.js --remind 资产部');
+    console.log('  --dry-run          预览不发送');
+    console.log('\n看板功能：');
+    console.log('  点击部门 → 展开任务明细');
+    console.log('  ✓ 按钮 → 标记完成/未完成');
+    console.log('  — 按钮 → 排除/纳入统计');
+    console.log('  实时重算达成率');
   }
 }
 

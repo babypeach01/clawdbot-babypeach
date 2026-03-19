@@ -21,12 +21,23 @@ const reminderEngine = require('./modules/reminder-engine');
 const reportGenerator = require('./modules/report-generator');
 const dataStore = require('./modules/data-store');
 const dingtalk = require('./modules/dingtalk-client');
+const messageTemplates = require('./modules/message-templates');
 const logger = require('./utils/logger');
+const fs = require('fs');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// CORS（看板页面从OSS跨域调用API）
+app.use('/api', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 
 // ============================================
 // HTTP API 接口（支持手动触发和外部集成）
@@ -193,6 +204,36 @@ app.post('/api/push', async (req, res) => {
   } catch (err) {
     logger.error(`推送接口错误: ${err.message}`);
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 保存人工覆盖状态（从看板页面POST过来）
+ * POST /api/overrides
+ * Body: { "overrides": { "taskId": { "status": "completed"|"pending", "excluded": bool } } }
+ */
+app.post('/api/overrides', (req, res) => {
+  try {
+    const { overrides, updatedAt } = req.body;
+    const filepath = path.join(config.server.dataDir, 'overrides.json');
+    fs.writeFileSync(filepath, JSON.stringify({ overrides, updatedAt }, null, 2));
+    logger.info(`人工覆盖已保存: ${Object.keys(overrides || {}).length} 项`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 读取人工覆盖状态
+ * GET /api/overrides
+ */
+app.get('/api/overrides', (req, res) => {
+  const filepath = path.join(config.server.dataDir, 'overrides.json');
+  if (fs.existsSync(filepath)) {
+    res.json(JSON.parse(fs.readFileSync(filepath, 'utf8')));
+  } else {
+    res.json({ overrides: {} });
   }
 });
 

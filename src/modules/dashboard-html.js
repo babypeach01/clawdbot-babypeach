@@ -1,222 +1,402 @@
 /**
- * 可视化看板页面生成器（v5 - 浅色简约 · AntV G2Plot）
+ * 交互式看板生成器（v6 - 下钻 + 人工调整）
  *
- * 白底 + 低饱和色 + 精致排版 + 轻量圆角
- * 风格：苹果/无印良品式极简，拒绝花哨
+ * 功能：
+ *   1. 宏观图表：部门达成率柱状图 + KPI卡片
+ *   2. 点击部门 → 展开任务明细（哪些完成/未完成/不计入）
+ *   3. 人工调整：标记完成/未完成/排除统计，实时重算达成率
+ *   4. 调整结果保存到服务器（POST /api/overrides）
  */
 const dayjs = require('dayjs');
 
 class DashboardHtml {
-  generate(taskData) {
+  generate(taskData, serverBaseUrl = '') {
     const { departments, summary } = taskData;
     const today = dayjs();
     const dateStr = today.format('YYYY年M月D日');
     const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.day()];
-    const totalPending = summary.totalTasks - summary.completedTasks;
 
-    const deptSorted = [...departments]
-      .filter(d => (d.pendingCount || 0) + (d.completedCount || 0) > 0)
-      .sort((a, b) => (b.pendingCount || 0) - (a.pendingCount || 0));
-
-    // ━━━ 数据准备 ━━━
-    const deptBarData = [];
-    for (const d of deptSorted) {
-      const name = this._short(d.department);
-      deptBarData.push({ dept: name, type: '待办', count: d.pendingCount || 0 });
-      deptBarData.push({ dept: name, type: '已完成', count: d.completedCount || 0 });
-    }
-
-    const statusData = [
-      { status: '推进中', count: summary.inProgressTasks || 0 },
-      { status: '催办中', count: summary.pendingResponseTasks || 0 },
-      { status: '阻塞', count: summary.blockedTasks || 0 },
-      { status: '暂缓', count: summary.onHoldTasks || 0 },
-      { status: '待启动', count: summary.notStartedTasks || 0 },
-      { status: '已完成', count: summary.completedTasks || 0 },
-    ].filter(d => d.count > 0);
-
-    const completionData = deptSorted.map(d => {
-      const total = (d.pendingCount || 0) + (d.completedCount || 0);
-      return { dept: this._short(d.department), rate: total > 0 ? Math.round(((d.completedCount || 0) / total) * 100) : 0 };
-    }).sort((a, b) => b.rate - a.rate);
-
-    // 异常信号数据
-    const healthData = [];
-    for (const d of departments) {
-      const blocked = (d.tasks || []).filter(t => t.statusKey === 'blocked' && !t.isCompleted).length;
-      const overdue = (d.tasks || []).filter(t => !t.isCompleted && t.deadline && dayjs(t.deadline).isBefore(today, 'day')).length;
-      const urgent = (d.tasks || []).filter(t => t.statusKey === 'pending_response' && !t.isCompleted).length;
-      if (blocked + overdue + urgent > 0) {
-        const name = this._short(d.department);
-        healthData.push({ dept: name, type: '阻塞', count: blocked });
-        healthData.push({ dept: name, type: '逾期', count: overdue });
-        healthData.push({ dept: name, type: '催办中', count: urgent });
-      }
-    }
-
-    // 逾期天数分布
-    const overdueDistrib = [];
-    for (const dept of departments) {
-      for (const t of dept.tasks || []) {
-        if (t.isCompleted || !t.deadline) continue;
-        if (dayjs(t.deadline).isBefore(today, 'day')) {
-          const days = today.diff(dayjs(t.deadline), 'day');
-          const bucket = days <= 3 ? '1-3天' : days <= 7 ? '4-7天' : days <= 14 ? '8-14天' : '15天+';
-          overdueDistrib.push({ range: bucket, dept: this._short(dept.department), count: 1 });
-        }
-      }
-    }
-    const overdueAgg = {};
-    for (const d of overdueDistrib) {
-      const key = `${d.range}|${d.dept}`;
-      overdueAgg[key] = overdueAgg[key] || { range: d.range, dept: d.dept, count: 0 };
-      overdueAgg[key].count += d.count;
-    }
-    const overdueData = Object.values(overdueAgg);
-
-    // 异常表格
-    const alertRows = [];
-    for (const dept of departments) {
-      for (const task of dept.tasks || []) {
-        if (task.isCompleted) continue;
-        const owner = task.owner || dept.owner || '';
-        const deptName = this._short(dept.department);
-        if (task.statusKey === 'blocked')
-          alertRows.push({ status: '阻塞', color: '#E8676B', dept: deptName, title: (task.title || '').slice(0, 28), owner, deadline: task.deadline ? dayjs(task.deadline).format('M/D') : '—', level: 3 });
-        if (task.deadline && dayjs(task.deadline).isBefore(today, 'day')) {
-          const days = today.diff(dayjs(task.deadline), 'day');
-          alertRows.push({ status: `逾期${days}天`, color: days > 5 ? '#E8676B' : '#F0A551', dept: deptName, title: (task.title || '').slice(0, 28), owner, deadline: dayjs(task.deadline).format('M/D'), level: days > 5 ? 3 : 2 });
-        }
-        if (task.statusKey === 'pending_response')
-          alertRows.push({ status: '催办中', color: '#F0A551', dept: deptName, title: (task.title || '').slice(0, 28), owner, deadline: task.deadline ? dayjs(task.deadline).format('M/D') : '—', level: 1 });
-      }
-    }
-    alertRows.sort((a, b) => b.level - a.level);
-    const tableRows = alertRows.slice(0, 25).map(a =>
-      `<tr><td><span class="badge" style="background:${a.color}">${a.status}</span></td><td>${a.dept}</td><td class="cell-title">${a.title}</td><td>${a.owner}</td><td>${a.deadline}</td></tr>`
-    ).join('');
-
-    const overallRate = summary.totalTasks > 0 ? Math.round((summary.completedTasks / summary.totalTasks) * 100) : 0;
+    // 构建完整的部门+任务数据（嵌入到HTML中）
+    const deptData = departments
+      .filter(d => (d.pendingCount || 0) + (d.completedCount || 0) > 0 || (d.tasks || []).length > 0)
+      .map(d => {
+        const tasks = (d.tasks || []).map((t, idx) => ({
+          id: `${this._short(d.department)}_${idx}`,
+          title: t.title || '',
+          owner: t.owner || d.owner || '',
+          status: t.status || '',
+          statusKey: t.statusKey || 'in_progress',
+          deadline: t.deadline || null,
+          isCompleted: !!t.isCompleted,
+          isBlocked: !!t.isBlocked,
+          // 默认：已完成的计入完成，未完成的计入待办，都参与统计
+          overrideStatus: t.isCompleted ? 'completed' : 'pending',
+          excluded: false, // 是否排除出统计
+        }));
+        return {
+          name: this._short(d.department),
+          fullName: d.department,
+          owner: d.owner || '',
+          tasks,
+        };
+      });
 
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>任务进展总览 · ${today.format('M/D')}</title>
+<title>工作看板 · ${today.format('M/D')}</title>
 <script src="https://unpkg.com/@antv/g2plot@2/dist/g2plot.min.js"><\/script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{
-  --bg:#f7f8fa;
-  --card:#ffffff;
-  --border:rgba(0,0,0,0.06);
-  --shadow:0 1px 3px rgba(0,0,0,0.04);
-  --text:#1a1a2e;
-  --sub:#8e8e93;
-  --dim:#b0b0b8;
-  --accent:#5B8DEF;
-}
-body{font-family:"SF Pro Display","PingFang SC",-apple-system,"Helvetica Neue",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased}
+:root{--bg:#f5f6fa;--card:#fff;--border:#e8eaef;--shadow:0 2px 8px rgba(0,0,0,0.06);--text:#1a1a2e;--sub:#8e8e93;--accent:#4A7FE5;--green:#45B369;--red:#E05858;--amber:#F0A050;--purple:#8B7FD4}
+body{font-family:-apple-system,"PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased}
 
-/* ━━ 顶栏 ━━ */
-.header{background:var(--card);border-bottom:1px solid var(--border);padding:20px 32px;display:flex;align-items:center;justify-content:space-between}
-.header h1{font-size:17px;font-weight:600;color:var(--text);letter-spacing:-0.2px}
-.header .meta{font-size:12px;color:var(--sub);margin-top:3px}
-.header-right{text-align:right}
-.header-right .rate-num{font-size:28px;font-weight:700;color:var(--accent);line-height:1}
-.header-right .rate-label{font-size:11px;color:var(--sub);margin-top:2px}
+/* 顶栏 */
+.header{background:var(--card);border-bottom:1px solid var(--border);padding:18px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.header h1{font-size:16px;font-weight:600}
+.header .meta{font-size:12px;color:var(--sub);margin-top:2px}
+.save-hint{font-size:12px;color:var(--green);opacity:0;transition:opacity .3s}
+.save-hint.show{opacity:1}
 
-/* ━━ KPI 卡片 ━━ */
-.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;padding:16px 32px}
-.kpi{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 14px;text-align:center;box-shadow:var(--shadow)}
-.kpi .num{font-size:28px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
-.kpi .lbl{font-size:11px;color:var(--sub);margin-top:5px;font-weight:500}
-.kpi.c-blue .num{color:#5B8DEF}
-.kpi.c-amber .num{color:#F0A551}
-.kpi.c-green .num{color:#5BBD72}
-.kpi.c-red .num{color:#E8676B}
-.kpi.c-purple .num{color:#9B8FD9}
+/* KPI */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:14px 24px}
+.kpi{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center;box-shadow:var(--shadow)}
+.kpi .num{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+.kpi .lbl{font-size:11px;color:var(--sub);margin-top:3px}
+.kpi.blue .num{color:var(--accent)}
+.kpi.green .num{color:var(--green)}
+.kpi.amber .num{color:var(--amber)}
+.kpi.red .num{color:var(--red)}
 
-/* ━━ 图表区域 ━━ */
-.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 32px 12px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 20px;box-shadow:var(--shadow)}
-.card.full{grid-column:1/-1}
-.card-head{font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:8px}
-.card-head::before{content:'';width:3px;height:14px;border-radius:2px;background:var(--accent)}
-.chart-el{width:100%;height:280px}
+/* 图表 */
+.chart-section{padding:0 24px 10px}
+.chart-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;box-shadow:var(--shadow);margin-bottom:12px}
+.chart-title{font-size:13px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.chart-title::before{content:'';width:3px;height:13px;border-radius:2px;background:var(--accent)}
+#mainChart{width:100%;height:320px}
 
-/* ━━ 表格 ━━ */
-.tbl-wrap{max-height:380px;overflow-y:auto;border-radius:8px;border:1px solid var(--border);scrollbar-width:thin;scrollbar-color:#ddd transparent}
-.tbl-wrap::-webkit-scrollbar{width:4px}
-.tbl-wrap::-webkit-scrollbar-thumb{background:#ddd;border-radius:2px}
-table{width:100%;border-collapse:collapse;font-size:13px}
-thead{position:sticky;top:0;z-index:2}
-th{background:#f7f8fa;color:var(--sub);font-weight:500;padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);font-size:11px;letter-spacing:0.3px}
-td{padding:10px 12px;border-bottom:1px solid var(--border)}
-tr:hover td{background:#f7f8fa}
-.badge{display:inline-block;padding:2px 8px;border-radius:4px;color:#fff;font-size:11px;font-weight:500;white-space:nowrap}
-.cell-title{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#3a3a4a}
+/* 部门列表 */
+.dept-list{padding:0 24px 20px}
+.dept-item{background:var(--card);border:1px solid var(--border);border-radius:10px;margin-bottom:8px;box-shadow:var(--shadow);overflow:hidden;transition:all .2s}
+.dept-header{padding:14px 18px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;user-select:none;transition:background .15s}
+.dept-header:hover{background:#f8f9fc}
+.dept-header:active{background:#f0f2f8}
+.dept-left{display:flex;align-items:center;gap:10px}
+.dept-name{font-size:14px;font-weight:600}
+.dept-owner{font-size:12px;color:var(--sub)}
+.dept-stats{display:flex;align-items:center;gap:12px}
+.dept-rate{font-size:18px;font-weight:700;min-width:48px;text-align:right}
+.dept-rate.high{color:var(--green)}
+.dept-rate.mid{color:var(--amber)}
+.dept-rate.low{color:var(--red)}
+.dept-bar{width:80px;height:6px;background:#eee;border-radius:3px;overflow:hidden}
+.dept-bar-fill{height:100%;border-radius:3px;transition:width .3s,background .3s}
+.dept-arrow{font-size:12px;color:var(--sub);transition:transform .2s}
+.dept-item.open .dept-arrow{transform:rotate(90deg)}
+.dept-counts{font-size:11px;color:var(--sub);white-space:nowrap}
 
-/* ━━ 底部 ━━ */
-.foot{text-align:center;padding:20px 32px;color:var(--dim);font-size:11px}
-.foot .tag{display:inline-block;background:#f0f1f5;color:var(--sub);padding:3px 12px;border-radius:12px;font-size:10px;font-weight:500;margin-bottom:6px}
+/* 任务列表 */
+.task-list{display:none;border-top:1px solid var(--border);background:#fafbfd}
+.dept-item.open .task-list{display:block}
+.task-row{display:flex;align-items:center;padding:10px 18px;border-bottom:1px solid #f0f1f5;gap:10px;transition:background .1s}
+.task-row:last-child{border-bottom:none}
+.task-row:hover{background:#f4f5fa}
+.task-row.excluded{opacity:.45}
 
-@media(max-width:680px){.kpis{grid-template-columns:repeat(2,1fr)}.charts{grid-template-columns:1fr}.kpi .num{font-size:22px}}
+/* 控制按钮 */
+.task-controls{display:flex;gap:4px;flex-shrink:0}
+.ctrl-btn{width:28px;height:28px;border-radius:6px;border:1.5px solid #ddd;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;transition:all .15s}
+.ctrl-btn:hover{border-color:#bbb;background:#f8f8f8}
+.ctrl-btn.active-done{background:var(--green);border-color:var(--green);color:#fff}
+.ctrl-btn.active-excl{background:#bbb;border-color:#bbb;color:#fff}
+
+.task-info{flex:1;min-width:0}
+.task-title{font-size:13px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-row.completed .task-title{text-decoration:line-through;color:var(--sub)}
+.task-meta{font-size:11px;color:var(--sub);margin-top:1px;display:flex;gap:8px}
+.task-status{flex-shrink:0;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:500}
+.s-progress{background:#E8F0FE;color:#4A7FE5}
+.s-blocked{background:#FEECEC;color:#E05858}
+.s-pending{background:#FFF3E0;color:#F0A050}
+.s-hold{background:#F0F0F5;color:#8e8e93}
+.s-done{background:#E8F8EE;color:#45B369}
+.overdue-tag{color:var(--red);font-weight:500}
+
+/* 图例 */
+.legend{display:flex;gap:16px;padding:10px 24px;font-size:12px;color:var(--sub)}
+.legend-item{display:flex;align-items:center;gap:4px}
+.legend-dot{width:8px;height:8px;border-radius:2px}
+
+/* 底部 */
+.foot{text-align:center;padding:20px;color:var(--sub);font-size:11px}
+
+@media(max-width:600px){.kpis{grid-template-columns:repeat(2,1fr)}.dept-bar{display:none}}
 </style>
 </head>
 <body>
 
 <div class="header">
   <div>
-    <h1>任务进展总览</h1>
+    <h1>📊 工作看板</h1>
     <div class="meta">${dateStr} ${weekday}</div>
   </div>
-  <div class="header-right">
-    <div class="rate-num">${overallRate}%</div>
-    <div class="rate-label">整体完成率</div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <span class="save-hint" id="saveHint">✓ 已保存</span>
   </div>
 </div>
 
 <div class="kpis">
-  <div class="kpi c-blue"><div class="num">${summary.totalTasks}</div><div class="lbl">全部事项</div></div>
-  <div class="kpi c-amber"><div class="num">${totalPending}</div><div class="lbl">进行中</div></div>
-  <div class="kpi c-green"><div class="num">${summary.completedTasks}</div><div class="lbl">已完成</div></div>
-  <div class="kpi c-red"><div class="num">${summary.blockedTasks}</div><div class="lbl">阻塞</div></div>
-  <div class="kpi c-purple"><div class="num">${summary.pendingResponseTasks || 0}</div><div class="lbl">待跟进</div></div>
+  <div class="kpi blue"><div class="num" id="kTotal">-</div><div class="lbl">统计总数</div></div>
+  <div class="kpi amber"><div class="num" id="kPending">-</div><div class="lbl">待办</div></div>
+  <div class="kpi green"><div class="num" id="kDone">-</div><div class="lbl">已完成</div></div>
+  <div class="kpi red"><div class="num" id="kRate">-</div><div class="lbl">达成率</div></div>
 </div>
 
-<div class="charts">
-  <div class="card full"><div class="card-head">部门任务分布</div><div id="c1" class="chart-el"></div></div>
-  <div class="card"><div class="card-head">任务状态总览</div><div id="c2" class="chart-el"></div></div>
-  <div class="card"><div class="card-head">部门完成率</div><div id="c3" class="chart-el"></div></div>
-  ${healthData.length > 0 ? '<div class="card"><div class="card-head">异常信号</div><div id="c4" class="chart-el"></div></div>' : ''}
-  ${overdueData.length > 0 ? '<div class="card"><div class="card-head">逾期天数分布</div><div id="c5" class="chart-el"></div></div>' : ''}
-  ${alertRows.length > 0 ? `<div class="card full"><div class="card-head">异常事项 (${alertRows.length})</div><div class="tbl-wrap"><table><thead><tr><th>状态</th><th>部门</th><th>事项</th><th>负责人</th><th>截止</th></tr></thead><tbody>${tableRows}</tbody></table></div></div>` : ''}
+<div class="chart-section">
+  <div class="chart-card">
+    <div class="chart-title">部门达成率</div>
+    <div id="mainChart"></div>
+  </div>
 </div>
 
-<div class="foot"><div class="tag">ClawdBot · AI 生成</div><div>${today.format('YYYY-MM-DD HH:mm')} 自动生成</div></div>
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> 点击 ✓ = 标记完成</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#bbb"></div> 点击 — = 排除统计</div>
+  <div class="legend-item">点击部门行展开任务明细</div>
+</div>
+
+<div class="dept-list" id="deptList"></div>
+
+<div class="foot">ClawdBot · ${today.format('YYYY-MM-DD HH:mm')} 生成 · 点击部门查看明细 · 调整后自动保存</div>
 
 <script>
-var P=G2Plot;
-var chartColors = {
-  pending: '#F09A7E',
-  done: '#7ED6A8',
-  status: ['#5B8DEF','#F0A551','#E8676B','#9B8FD9','#C8C8CE','#5BBD72'],
-  health: ['#E8676B','#F0A551','#E8C94A'],
-  dept: ['#5B8DEF','#5AC8C8','#9B8FD9','#E88CB4','#F0A551','#5BBD72','#A0A4B0','#F09A7E']
-};
-var T={theme:'light'};
+// ━━━ 嵌入数据 ━━━
+var DEPTS = ${JSON.stringify(deptData)};
+var SERVER = '${serverBaseUrl}';
+var chart = null;
 
-new P.Bar('c1',Object.assign({data:${JSON.stringify(deptBarData)},isStack:true,xField:'count',yField:'dept',seriesField:'type',color:[chartColors.pending, chartColors.done],barWidthRatio:.45,label:{position:'middle',style:{fill:'#fff',fontSize:11,fontWeight:500}},legend:{position:'top-right',itemName:{style:{fill:'#8e8e93',fontSize:12}}},xAxis:{grid:{line:{style:{stroke:'rgba(0,0,0,0.04)'}}},label:{style:{fill:'#8e8e93'}}},yAxis:{label:{style:{fill:'#3a3a4a',fontSize:13,fontWeight:500}}},barStyle:{radius:[0,4,4,0]},interactions:[{type:'active-region'}]},T)).render();
+// ━━━ 从localStorage恢复覆盖状态 ━━━
+function loadOverrides() {
+  try {
+    var saved = localStorage.getItem('clawdbot_overrides');
+    if (!saved) return;
+    var map = JSON.parse(saved);
+    DEPTS.forEach(function(d) {
+      d.tasks.forEach(function(t) {
+        if (map[t.id]) {
+          if (map[t.id].status) t.overrideStatus = map[t.id].status;
+          if (map[t.id].excluded !== undefined) t.excluded = map[t.id].excluded;
+        }
+      });
+    });
+  } catch(e) {}
+}
 
-new P.Pie('c2',Object.assign({data:${JSON.stringify(statusData)},angleField:'count',colorField:'status',radius:.88,innerRadius:.62,color:chartColors.status,label:{type:'spider',content:'{name} {value}',style:{fill:'#8e8e93',fontSize:11}},legend:{position:'bottom',itemName:{style:{fill:'#8e8e93',fontSize:12}},maxRow:2},statistic:{title:{content:'总计',style:{color:'#8e8e93',fontSize:'12px',fontWeight:400}},content:{content:'${summary.totalTasks}',style:{color:'#1a1a2e',fontSize:'28px',fontWeight:700}}},pieStyle:{stroke:'#fff',lineWidth:3},interactions:[{type:'element-active'}]},T)).render();
+function saveOverrides() {
+  var map = {};
+  DEPTS.forEach(function(d) {
+    d.tasks.forEach(function(t) {
+      var defaultStatus = t.isCompleted ? 'completed' : 'pending';
+      if (t.overrideStatus !== defaultStatus || t.excluded) {
+        map[t.id] = { status: t.overrideStatus, excluded: t.excluded };
+      }
+    });
+  });
+  localStorage.setItem('clawdbot_overrides', JSON.stringify(map));
+  // 尝试同步到服务器
+  if (SERVER) {
+    fetch(SERVER + '/api/overrides', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ overrides: map, updatedAt: new Date().toISOString() })
+    }).catch(function(){});
+  }
+  var hint = document.getElementById('saveHint');
+  hint.classList.add('show');
+  setTimeout(function(){ hint.classList.remove('show'); }, 2000);
+}
 
-new P.Bar('c3',Object.assign({data:${JSON.stringify(completionData)},xField:'rate',yField:'dept',seriesField:'dept',color:function(d){var v=d.rate||0;return v>=50?'#5BBD72':v>=20?'#F0A551':'#E8676B'},barWidthRatio:.45,legend:false,label:{position:'right',content:function(d){return d.rate+'%'},style:{fill:'#8e8e93',fontSize:11}},xAxis:{max:100,grid:{line:{style:{stroke:'rgba(0,0,0,0.04)'}}},label:{style:{fill:'#8e8e93'},formatter:function(v){return v+'%'}}},yAxis:{label:{style:{fill:'#3a3a4a',fontSize:13,fontWeight:500}}},barStyle:{radius:[0,4,4,0]},interactions:[{type:'active-region'}]},T)).render();
+// ━━━ 计算统计 ━━━
+function calcDeptStats(dept) {
+  var total = 0, done = 0;
+  dept.tasks.forEach(function(t) {
+    if (t.excluded) return;
+    total++;
+    if (t.overrideStatus === 'completed') done++;
+  });
+  return { total: total, done: done, pending: total - done, rate: total > 0 ? Math.round(done / total * 100) : 0 };
+}
 
-${healthData.length > 0 ? `new P.Bar('c4',Object.assign({data:${JSON.stringify(healthData)},isStack:true,xField:'count',yField:'dept',seriesField:'type',color:chartColors.health,barWidthRatio:.45,label:{position:'middle',style:{fill:'#fff',fontSize:11,fontWeight:500}},legend:{position:'top-right',itemName:{style:{fill:'#8e8e93',fontSize:12}}},xAxis:{grid:{line:{style:{stroke:'rgba(0,0,0,0.04)'}}},label:{style:{fill:'#8e8e93'}},tickInterval:1},yAxis:{label:{style:{fill:'#3a3a4a',fontSize:13,fontWeight:500}}},barStyle:{radius:[0,4,4,0]},interactions:[{type:'active-region'}]},T)).render();` : ''}
+function calcGlobalStats() {
+  var total = 0, done = 0;
+  DEPTS.forEach(function(d) {
+    var s = calcDeptStats(d);
+    total += s.total;
+    done += s.done;
+  });
+  return { total: total, done: done, pending: total - done, rate: total > 0 ? Math.round(done / total * 100) : 0 };
+}
 
-${overdueData.length > 0 ? `new P.Column('c5',Object.assign({data:${JSON.stringify(overdueData)},isGroup:true,xField:'range',yField:'count',seriesField:'dept',color:chartColors.dept,columnWidthRatio:.55,label:{position:'top',style:{fill:'#8e8e93',fontSize:10}},legend:{position:'top-right',itemName:{style:{fill:'#8e8e93',fontSize:11}}},xAxis:{label:{style:{fill:'#3a3a4a',fontSize:12}}},yAxis:{grid:{line:{style:{stroke:'rgba(0,0,0,0.04)'}}},label:{style:{fill:'#8e8e93'}},tickInterval:1},columnStyle:{radius:[4,4,0,0]},interactions:[{type:'active-region'}]},T)).render();` : ''}
+// ━━━ 渲染KPI ━━━
+function renderKPIs() {
+  var g = calcGlobalStats();
+  document.getElementById('kTotal').textContent = g.total;
+  document.getElementById('kPending').textContent = g.pending;
+  document.getElementById('kDone').textContent = g.done;
+  document.getElementById('kRate').textContent = g.rate + '%';
+}
+
+// ━━━ 渲染图表 ━━━
+function renderChart() {
+  var data = DEPTS.map(function(d) {
+    var s = calcDeptStats(d);
+    return { dept: d.name, rate: s.rate, done: s.done, total: s.total };
+  }).filter(function(d){ return d.total > 0; }).sort(function(a,b){ return a.rate - b.rate; });
+
+  if (chart) { chart.changeData(data); return; }
+
+  chart = new G2Plot.Bar('mainChart', {
+    data: data,
+    xField: 'rate',
+    yField: 'dept',
+    seriesField: 'dept',
+    color: function(d) {
+      var v = d.rate || 0;
+      return v >= 60 ? '#45B369' : v >= 30 ? '#F0A050' : '#E05858';
+    },
+    maxBarWidth: 28,
+    barWidthRatio: 0.5,
+    legend: false,
+    label: {
+      position: 'right',
+      content: function(d) { return d.rate + '% (' + d.done + '/' + d.total + ')'; },
+      style: { fill: '#8e8e93', fontSize: 12 }
+    },
+    xAxis: { max: 100, grid: { line: { style: { stroke: 'rgba(0,0,0,0.04)' }}}, label: { style: { fill: '#8e8e93' }, formatter: function(v){ return v+'%'; } } },
+    yAxis: { label: { style: { fill: '#3a3a4a', fontSize: 13, fontWeight: 600 } } },
+    barStyle: { radius: [0, 6, 6, 0] },
+    interactions: [{ type: 'active-region' }],
+    theme: 'light'
+  });
+  chart.render();
+
+  // 点击图表跳转到对应部门
+  chart.on('element:click', function(ev) {
+    var d = ev.data && ev.data.data;
+    if (d && d.dept) {
+      var el = document.querySelector('[data-dept="' + d.dept + '"]');
+      if (el) { el.classList.add('open'); el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    }
+  });
+}
+
+// ━━━ 状态样式 ━━━
+function statusClass(key) {
+  var m = { in_progress:'s-progress', blocked:'s-blocked', pending_response:'s-pending', on_hold:'s-hold', completed:'s-done', not_started:'s-hold' };
+  return m[key] || 's-progress';
+}
+function statusLabel(key) {
+  var m = { in_progress:'推进中', blocked:'阻塞', pending_response:'催办中', on_hold:'暂缓', completed:'已完成', not_started:'待启动' };
+  return m[key] || '推进中';
+}
+
+// ━━━ 渲染部门列表 ━━━
+function renderDeptList() {
+  var container = document.getElementById('deptList');
+  container.innerHTML = '';
+
+  DEPTS.forEach(function(dept, di) {
+    var stats = calcDeptStats(dept);
+    var rateClass = stats.rate >= 60 ? 'high' : stats.rate >= 30 ? 'mid' : 'low';
+    var barColor = stats.rate >= 60 ? 'var(--green)' : stats.rate >= 30 ? 'var(--amber)' : 'var(--red)';
+
+    var el = document.createElement('div');
+    el.className = 'dept-item';
+    el.setAttribute('data-dept', dept.name);
+
+    // 部门头
+    var header = '<div class="dept-header" onclick="toggleDept(this)">';
+    header += '<div class="dept-left">';
+    header += '<span class="dept-arrow">▶</span>';
+    header += '<span class="dept-name">' + dept.name + '</span>';
+    if (dept.owner) header += '<span class="dept-owner">' + dept.owner + '</span>';
+    header += '</div>';
+    header += '<div class="dept-stats">';
+    header += '<span class="dept-counts">' + stats.done + '完成 / ' + stats.pending + '待办' + (stats.total < dept.tasks.length ? ' / ' + (dept.tasks.length - stats.total) + '排除' : '') + '</span>';
+    header += '<div class="dept-bar"><div class="dept-bar-fill" style="width:' + stats.rate + '%;background:' + barColor + '"></div></div>';
+    header += '<span class="dept-rate ' + rateClass + '">' + stats.rate + '%</span>';
+    header += '</div></div>';
+
+    // 任务列表
+    var taskHtml = '<div class="task-list">';
+    dept.tasks.forEach(function(task, ti) {
+      var isDone = task.overrideStatus === 'completed';
+      var isExcl = task.excluded;
+      var rowClass = 'task-row' + (isDone ? ' completed' : '') + (isExcl ? ' excluded' : '');
+
+      taskHtml += '<div class="' + rowClass + '" data-di="' + di + '" data-ti="' + ti + '">';
+
+      // 控制按钮
+      taskHtml += '<div class="task-controls">';
+      taskHtml += '<button class="ctrl-btn' + (isDone ? ' active-done' : '') + '" onclick="toggleDone(' + di + ',' + ti + ')" title="标记完成/未完成">✓</button>';
+      taskHtml += '<button class="ctrl-btn' + (isExcl ? ' active-excl' : '') + '" onclick="toggleExcl(' + di + ',' + ti + ')" title="排除/纳入统计">—</button>';
+      taskHtml += '</div>';
+
+      // 任务信息
+      taskHtml += '<div class="task-info">';
+      taskHtml += '<div class="task-title">' + escHtml(task.title) + '</div>';
+      taskHtml += '<div class="task-meta">';
+      if (task.owner) taskHtml += '<span>' + escHtml(task.owner) + '</span>';
+      if (task.deadline) {
+        var dl = new Date(task.deadline);
+        var now = new Date();
+        var isOverdue = !isDone && dl < now;
+        taskHtml += '<span' + (isOverdue ? ' class="overdue-tag"' : '') + '>截止 ' + (dl.getMonth()+1) + '/' + dl.getDate() + (isOverdue ? ' ⚠️' : '') + '</span>';
+      }
+      taskHtml += '</div></div>';
+
+      // 原始状态标签
+      taskHtml += '<span class="task-status ' + statusClass(task.statusKey) + '">' + statusLabel(task.statusKey) + '</span>';
+      taskHtml += '</div>';
+    });
+    taskHtml += '</div>';
+
+    el.innerHTML = header + taskHtml;
+    container.appendChild(el);
+  });
+}
+
+function escHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ━━━ 交互逻辑 ━━━
+function toggleDept(headerEl) {
+  headerEl.parentElement.classList.toggle('open');
+}
+
+function toggleDone(di, ti) {
+  var task = DEPTS[di].tasks[ti];
+  task.overrideStatus = task.overrideStatus === 'completed' ? 'pending' : 'completed';
+  refresh();
+  saveOverrides();
+}
+
+function toggleExcl(di, ti) {
+  var task = DEPTS[di].tasks[ti];
+  task.excluded = !task.excluded;
+  refresh();
+  saveOverrides();
+}
+
+function refresh() {
+  renderKPIs();
+  renderChart();
+  renderDeptList();
+}
+
+// ━━━ 初始化 ━━━
+loadOverrides();
+refresh();
 <\/script>
 </body>
 </html>`;
