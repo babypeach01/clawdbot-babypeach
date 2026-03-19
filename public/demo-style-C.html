@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>风格C · 赛博霓虹大屏</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000810;
+    color: #e0f0ff;
+    font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  /* 扫描线动画 */
+  body::after {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(0,200,255,0.6), transparent);
+    animation: scan 4s linear infinite;
+    z-index: 999;
+    pointer-events: none;
+  }
+  @keyframes scan { 0% { top: 0; } 100% { top: 100vh; }}
+
+  /* 网格背景 */
+  .bg-grid {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-image:
+      linear-gradient(rgba(0,100,200,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,100,200,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+  }
+
+  .container { position: relative; z-index: 1; }
+
+  /* 顶部 */
+  .header {
+    text-align: center;
+    padding: 28px 0 20px;
+    position: relative;
+  }
+  .header::before, .header::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    height: 1px;
+    width: 35%;
+  }
+  .header::before { left: 0; background: linear-gradient(90deg, transparent, #00c8ff); }
+  .header::after { right: 0; background: linear-gradient(270deg, transparent, #c084fc); }
+  .header h1 {
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: 12px;
+    color: #00e5ff;
+    text-shadow: 0 0 30px rgba(0,229,255,0.5), 0 0 60px rgba(0,229,255,0.2);
+  }
+  .header .sub {
+    color: #4a7a9b;
+    font-size: 12px;
+    margin-top: 8px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+  }
+
+  /* KPI区 */
+  .kpi-row {
+    display: flex;
+    justify-content: center;
+    gap: 2px;
+    padding: 20px 24px;
+  }
+  .kpi-card {
+    flex: 1;
+    max-width: 200px;
+    text-align: center;
+    padding: 20px 16px;
+    position: relative;
+    background: rgba(0,20,40,0.6);
+    border: 1px solid var(--glow);
+    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+  }
+  .kpi-card::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at center, var(--glow-bg), transparent 70%);
+    pointer-events: none;
+  }
+  .kpi-card .num {
+    font-size: 38px;
+    font-weight: 800;
+    font-family: 'Courier New', monospace;
+    color: var(--glow);
+    text-shadow: 0 0 20px var(--glow);
+    position: relative;
+    z-index: 1;
+  }
+  .kpi-card .label {
+    font-size: 11px;
+    color: #5a8aab;
+    margin-top: 4px;
+    letter-spacing: 3px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* 图表 */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    padding: 0 24px;
+    margin-bottom: 2px;
+  }
+  .panel {
+    background: rgba(0,15,30,0.7);
+    border: 1px solid rgba(0,200,255,0.08);
+    padding: 16px;
+    position: relative;
+  }
+  .panel.full { grid-column: 1 / -1; }
+  .panel-title {
+    font-size: 13px;
+    color: #00c8ff;
+    font-weight: 500;
+    letter-spacing: 2px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .panel-title::before {
+    content: '◆';
+    font-size: 8px;
+  }
+  .chart { width: 100%; height: 300px; }
+  .chart.tall { height: 360px; }
+
+  /* 异常滚动列表 */
+  .alert-scroll {
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .alert-scroll::-webkit-scrollbar { width: 3px; }
+  .alert-scroll::-webkit-scrollbar-track { background: transparent; }
+  .alert-scroll::-webkit-scrollbar-thumb { background: rgba(0,200,255,0.2); border-radius: 2px; }
+  .alert-row {
+    display: flex;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(0,200,255,0.05);
+    font-size: 13px;
+  }
+  .alert-status {
+    width: 56px;
+    text-align: center;
+    font-size: 11px;
+    padding: 3px 0;
+    border-radius: 2px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .s-red { background: rgba(255,50,50,0.15); color: #ff5555; border: 1px solid rgba(255,50,50,0.3); }
+  .s-amber { background: rgba(255,180,0,0.12); color: #ffb400; border: 1px solid rgba(255,180,0,0.3); }
+  .alert-info { flex: 1; margin-left: 12px; }
+  .alert-info .task-name { color: #c0dcf0; }
+  .alert-info .dept-name { color: #4a7a9b; font-size: 11px; margin-top: 2px; }
+  .alert-days { width: 60px; text-align: right; color: #ff5555; font-family: monospace; font-size: 13px; }
+
+  .footer {
+    text-align: center;
+    padding: 24px;
+    color: #1a3a50;
+    font-size: 10px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+<div class="bg-grid"></div>
+<div class="container">
+
+<div class="header">
+  <h1>工 作 总 结</h1>
+  <div class="sub">Department Task Summary Dashboard · 2026.03.19</div>
+</div>
+
+<div class="kpi-row">
+  <div class="kpi-card" style="--glow:#00c8ff;--glow-bg:rgba(0,200,255,0.05)"><div class="num">48</div><div class="label">总 事 项</div></div>
+  <div class="kpi-card" style="--glow:#00ff88;--glow-bg:rgba(0,255,136,0.05)"><div class="num">15</div><div class="label">已 完 成</div></div>
+  <div class="kpi-card" style="--glow:#c084fc;--glow-bg:rgba(192,132,252,0.05)"><div class="num">24</div><div class="label">推 进 中</div></div>
+  <div class="kpi-card" style="--glow:#ff5555;--glow-bg:rgba(255,85,85,0.05)"><div class="num">5</div><div class="label">异 常</div></div>
+  <div class="kpi-card" style="--glow:#ffb400;--glow-bg:rgba(255,180,0,0.05)"><div class="num">31%</div><div class="label">完 成 率</div></div>
+</div>
+
+<div class="grid">
+  <!-- 部门进展 -->
+  <div class="panel full">
+    <div class="panel-title">各部门事项进展</div>
+    <div id="deptBar" class="chart tall"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">状态分布</div>
+    <div id="statusPie" class="chart"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">完成率排行</div>
+    <div id="rateBar" class="chart"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">逾期天数分布</div>
+    <div id="overdue" class="chart"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">本周完成趋势</div>
+    <div id="trend" class="chart"></div>
+  </div>
+</div>
+
+<!-- 异常表 -->
+<div class="panel full" style="margin: 0 24px 2px;">
+  <div class="panel-title">异常事项追踪</div>
+  <div class="alert-scroll">
+    <div class="alert-row"><div class="alert-status s-red">逾期</div><div class="alert-info"><div class="task-name">品牌VI升级交付</div><div class="dept-name">设计部 · 王五</div></div><div class="alert-days">7天</div></div>
+    <div class="alert-row"><div class="alert-status s-red">逾期</div><div class="alert-info"><div class="task-name">Q1需求评审文档定稿</div><div class="dept-name">产品部 · 张三</div></div><div class="alert-days">5天</div></div>
+    <div class="alert-row"><div class="alert-status s-red">阻塞</div><div class="alert-info"><div class="task-name">支付接口对接</div><div class="dept-name">技术部 · 赵六</div></div><div class="alert-days">3天</div></div>
+    <div class="alert-row"><div class="alert-status s-amber">催办</div><div class="alert-info"><div class="task-name">3月活动方案确认</div><div class="dept-name">运营部 · 李四</div></div><div class="alert-days">2天</div></div>
+    <div class="alert-row"><div class="alert-status s-amber">催办</div><div class="alert-info"><div class="task-name">竞品分析报告</div><div class="dept-name">市场部 · 孙七</div></div><div class="alert-days">1天</div></div>
+  </div>
+</div>
+
+<div class="footer">ClawdBot · AI Powered Task Summary System · Auto Generated 18:00</div>
+</div>
+
+<script>
+const depts = ['综合办公室','技术部','产品部','运营部','市场部','设计部','财务部','人力资源部'];
+
+const darkAxis = {
+  axisLine: { lineStyle: { color: 'rgba(0,200,255,0.1)' }},
+  splitLine: { lineStyle: { color: 'rgba(0,200,255,0.04)' }},
+  axisLabel: { color: '#4a7a9b', fontSize: 12 }
+};
+
+// 1. 部门进展
+echarts.init(document.getElementById('deptBar')).setOption({
+  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }},
+  legend: { data: ['已完成','推进中','待启动','异常'], right: 20, top: 0, textStyle: { color: '#4a7a9b', fontSize: 11 }},
+  grid: { left: 100, right: 30, top: 30, bottom: 15 },
+  yAxis: { type: 'category', data: depts, ...darkAxis, axisLabel: { color: '#8ab4d0', fontSize: 13 }},
+  xAxis: { type: 'value', ...darkAxis },
+  series: [
+    { name: '已完成', type: 'bar', stack: 't', data: [3,4,2,3,1,2,1,2], itemStyle: { color: '#00ff88' }},
+    { name: '推进中', type: 'bar', stack: 't', data: [2,5,4,3,3,2,2,3], itemStyle: { color: '#00c8ff' }},
+    { name: '待启动', type: 'bar', stack: 't', data: [1,1,2,1,1,0,1,1], itemStyle: { color: '#2a4a60' }},
+    { name: '异常', type: 'bar', stack: 't', data: [0,1,1,1,0,1,0,1], itemStyle: { color: '#ff5555', borderRadius: [0,3,3,0] }}
+  ]
+});
+
+// 2. 状态饼
+echarts.init(document.getElementById('statusPie')).setOption({
+  tooltip: { trigger: 'item' },
+  series: [{
+    type: 'pie', radius: ['50%', '74%'], center: ['50%', '52%'],
+    label: { show: true, color: '#4a7a9b', fontSize: 11, formatter: '{b}\n{d}%' },
+    labelLine: { lineStyle: { color: 'rgba(0,200,255,0.15)' }},
+    itemStyle: { borderColor: '#000810', borderWidth: 3 },
+    data: [
+      { value: 15, name: '已完成', itemStyle: { color: '#00ff88' }},
+      { value: 24, name: '推进中', itemStyle: { color: '#00c8ff' }},
+      { value: 3, name: '催办中', itemStyle: { color: '#ffb400' }},
+      { value: 3, name: '逾期', itemStyle: { color: '#ff5555' }},
+      { value: 2, name: '阻塞', itemStyle: { color: '#ff2222' }},
+      { value: 1, name: '暂缓', itemStyle: { color: '#c084fc' }}
+    ]
+  },{
+    type: 'pie', radius: [0, '40%'], center: ['50%', '52%'],
+    label: { show: true, position: 'center', formatter: '48\n总计', fontSize: 24, fontWeight: 'bold', color: '#00c8ff', lineHeight: 28 },
+    itemStyle: { color: 'transparent' }, data: [{ value: 1 }], silent: true
+  }]
+});
+
+// 3. 完成率
+echarts.init(document.getElementById('rateBar')).setOption({
+  grid: { left: 100, right: 50, top: 5, bottom: 15 },
+  yAxis: { type: 'category', data: depts.slice(0,6), ...darkAxis, inverse: true, axisLabel: { color: '#8ab4d0' }},
+  xAxis: { type: 'value', max: 100, ...darkAxis, axisLabel: { formatter: '{value}%' }},
+  series: [{
+    type: 'bar', barWidth: 14,
+    data: [
+      { value: 75, itemStyle: { color: new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:'#00884a'},{offset:1,color:'#00ff88'}]) }},
+      { value: 62, itemStyle: { color: new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:'#00884a'},{offset:1,color:'#00ff88'}]) }},
+      { value: 50, itemStyle: { color: new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:'#997700'},{offset:1,color:'#ffb400'}]) }},
+      { value: 43, itemStyle: { color: new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:'#997700'},{offset:1,color:'#ffb400'}]) }},
+      { value: 33, itemStyle: { color: new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:'#991111'},{offset:1,color:'#ff5555'}]) }},
+      { value: 25, itemStyle: { color: new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:'#991111'},{offset:1,color:'#ff5555'}]) }}
+    ],
+    label: { show: true, position: 'right', formatter: '{c}%', color: '#4a7a9b' },
+    itemStyle: { borderRadius: [0,3,3,0] }
+  }]
+});
+
+// 4. 逾期分布
+echarts.init(document.getElementById('overdue')).setOption({
+  grid: { left: 40, right: 15, top: 15, bottom: 25 },
+  xAxis: { type: 'category', data: ['1-3天','4-7天','8-14天','15天+'], ...darkAxis },
+  yAxis: { type: 'value', ...darkAxis },
+  series: [{
+    type: 'bar', barWidth: 32,
+    data: [
+      { value: 3, itemStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#ffb400'},{offset:1,color:'rgba(255,180,0,0.1)'}]) }},
+      { value: 2, itemStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#ff8800'},{offset:1,color:'rgba(255,136,0,0.1)'}]) }},
+      { value: 1, itemStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#ff5555'},{offset:1,color:'rgba(255,85,85,0.1)'}]) }},
+      { value: 1, itemStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#ff2222'},{offset:1,color:'rgba(255,34,34,0.1)'}]) }}
+    ],
+    label: { show: true, position: 'top', color: '#4a7a9b' }
+  }]
+});
+
+// 5. 趋势
+echarts.init(document.getElementById('trend')).setOption({
+  tooltip: { trigger: 'axis' },
+  legend: { data: ['完成','新增'], right: 0, top: 0, textStyle: { color: '#4a7a9b', fontSize: 11 }},
+  grid: { left: 35, right: 10, top: 28, bottom: 25 },
+  xAxis: { type: 'category', data: ['周一','周二','周三','周四','周五'], ...darkAxis, boundaryGap: false },
+  yAxis: { type: 'value', ...darkAxis },
+  series: [
+    { name: '完成', type: 'line', smooth: true, data: [2,3,4,null,null],
+      lineStyle: { color: '#00ff88', width: 2, shadowColor: 'rgba(0,255,136,0.3)', shadowBlur: 8 },
+      areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(0,255,136,0.2)'},{offset:1,color:'transparent'}]) },
+      itemStyle: { color: '#00ff88' }, symbolSize: 6
+    },
+    { name: '新增', type: 'line', smooth: true, data: [1,2,1,null,null],
+      lineStyle: { color: '#c084fc', width: 2, type: 'dashed' },
+      areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(192,132,252,0.1)'},{offset:1,color:'transparent'}]) },
+      itemStyle: { color: '#c084fc' }, symbolSize: 6
+    }
+  ]
+});
+</script>
+</body>
+</html>

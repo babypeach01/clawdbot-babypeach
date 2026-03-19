@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>风格B · 毛玻璃商务风</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: linear-gradient(135deg, #0c0e1a 0%, #151832 40%, #0d1225 100%);
+    color: #e2e8f0;
+    font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    min-height: 100vh;
+    padding: 24px;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    padding: 0 8px;
+  }
+  .header-left h1 {
+    font-size: 22px;
+    font-weight: 600;
+    color: #f1f5f9;
+  }
+  .header-left .sub {
+    font-size: 13px;
+    color: #64748b;
+    margin-top: 4px;
+  }
+  .header-right {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    backdrop-filter: blur(12px);
+  }
+  .badge-green { background: rgba(34,197,94,0.12); color: #4ade80; border: 1px solid rgba(34,197,94,0.2); }
+  .badge-amber { background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.2); }
+
+  /* 毛玻璃卡片 */
+  .glass {
+    background: rgba(255,255,255,0.03);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 16px;
+  }
+
+  /* KPI */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .kpi {
+    padding: 20px;
+    text-align: center;
+  }
+  .kpi .val {
+    font-size: 32px;
+    font-weight: 700;
+    font-family: 'DIN Alternate', 'Courier New', monospace;
+    background: linear-gradient(180deg, var(--c1) 0%, var(--c2) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .kpi .lbl {
+    font-size: 12px;
+    color: #64748b;
+    margin-top: 6px;
+  }
+  .kpi .delta {
+    font-size: 11px;
+    margin-top: 4px;
+    color: #4ade80;
+  }
+
+  /* 图表网格 */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .card {
+    padding: 20px;
+  }
+  .card.full { grid-column: 1 / -1; }
+  .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .card-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: #94a3b8;
+  }
+  .card-tag {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: rgba(59,130,246,0.1);
+    color: #60a5fa;
+  }
+  .chart { width: 100%; height: 280px; }
+  .chart.tall { height: 340px; }
+
+  /* 进度条表格 */
+  .dept-list { margin-top: 16px; }
+  .dept-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .dept-item:last-child { border-bottom: none; }
+  .dept-name { width: 100px; font-size: 13px; color: #cbd5e1; }
+  .dept-bar-bg {
+    flex: 1;
+    height: 8px;
+    background: rgba(255,255,255,0.04);
+    border-radius: 4px;
+    margin: 0 12px;
+    overflow: hidden;
+  }
+  .dept-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 1s ease;
+  }
+  .dept-pct { width: 45px; text-align: right; font-size: 13px; font-weight: 600; color: #94a3b8; }
+
+  /* 异常列表 */
+  .alert-list { list-style: none; }
+  .alert-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 13px;
+  }
+  .alert-item:last-child { border-bottom: none; }
+  .alert-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-top: 4px;
+    flex-shrink: 0;
+  }
+  .dot-red { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.4); }
+  .dot-amber { background: #f59e0b; box-shadow: 0 0 8px rgba(245,158,11,0.4); }
+  .alert-dept { color: #64748b; font-size: 12px; margin-top: 2px; }
+
+  .footer {
+    text-align: center;
+    padding: 20px;
+    color: #334155;
+    font-size: 11px;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <h1>工作总结看板</h1>
+    <div class="sub">2026年3月19日 · 周三日报</div>
+  </div>
+  <div class="header-right">
+    <span class="badge badge-green">✓ 今日完成 4 项</span>
+    <span class="badge badge-amber">⚠ 风险 2 项</span>
+  </div>
+</div>
+
+<div class="kpi-row">
+  <div class="kpi glass" style="--c1:#60a5fa;--c2:#3b82f6"><div class="val">48</div><div class="lbl">总事项</div><div class="delta">+2 本周新增</div></div>
+  <div class="kpi glass" style="--c1:#34d399;--c2:#10b981"><div class="val">15</div><div class="lbl">已完成</div><div class="delta">+4 今日</div></div>
+  <div class="kpi glass" style="--c1:#fbbf24;--c2:#f59e0b"><div class="val">24</div><div class="lbl">推进中</div><div class="delta">&nbsp;</div></div>
+  <div class="kpi glass" style="--c1:#f87171;--c2:#ef4444"><div class="val">5</div><div class="lbl">异常</div><div class="delta">逾期3 阻塞2</div></div>
+  <div class="kpi glass" style="--c1:#a78bfa;--c2:#8b5cf6"><div class="val">31%</div><div class="lbl">完成率</div><div class="delta">↑5% vs 上周</div></div>
+</div>
+
+<div class="grid">
+  <!-- 部门完成率 -->
+  <div class="card glass full">
+    <div class="card-head">
+      <span class="card-title">各部门完成进度</span>
+      <span class="card-tag">实时</span>
+    </div>
+    <div class="dept-list">
+      <div class="dept-item"><span class="dept-name">综合办公室</span><div class="dept-bar-bg"><div class="dept-bar-fill" style="width:75%;background:linear-gradient(90deg,#10b981,#34d399)"></div></div><span class="dept-pct">75%</span></div>
+      <div class="dept-item"><span class="dept-name">技术部</span><div class="dept-bar-bg"><div class="dept-bar-fill" style="width:62%;background:linear-gradient(90deg,#10b981,#34d399)"></div></div><span class="dept-pct">62%</span></div>
+      <div class="dept-item"><span class="dept-name">产品部</span><div class="dept-bar-bg"><div class="dept-bar-fill" style="width:50%;background:linear-gradient(90deg,#f59e0b,#fbbf24)"></div></div><span class="dept-pct">50%</span></div>
+      <div class="dept-item"><span class="dept-name">运营部</span><div class="dept-bar-bg"><div class="dept-bar-fill" style="width:43%;background:linear-gradient(90deg,#f59e0b,#fbbf24)"></div></div><span class="dept-pct">43%</span></div>
+      <div class="dept-item"><span class="dept-name">市场部</span><div class="dept-bar-bg"><div class="dept-bar-fill" style="width:33%;background:linear-gradient(90deg,#ef4444,#f87171)"></div></div><span class="dept-pct">33%</span></div>
+      <div class="dept-item"><span class="dept-name">设计部</span><div class="dept-bar-bg"><div class="dept-bar-fill" style="width:25%;background:linear-gradient(90deg,#ef4444,#f87171)"></div></div><span class="dept-pct">25%</span></div>
+      <div class="dept-item"><span class="dept-name">财务部</span><div class="dept-bar-bg"><div class="dept-bar-fill" style="width:50%;background:linear-gradient(90deg,#f59e0b,#fbbf24)"></div></div><span class="dept-pct">50%</span></div>
+      <div class="dept-item"><span class="dept-name">人力资源部</span><div class="dept-bar-bg"><div class="dept-bar-fill" style="width:40%;background:linear-gradient(90deg,#f59e0b,#fbbf24)"></div></div><span class="dept-pct">40%</span></div>
+    </div>
+  </div>
+
+  <!-- 状态分布 -->
+  <div class="card glass">
+    <div class="card-head"><span class="card-title">事项状态分布</span></div>
+    <div id="statusPie" class="chart"></div>
+  </div>
+
+  <!-- 本周趋势 -->
+  <div class="card glass">
+    <div class="card-head"><span class="card-title">本周完成趋势</span></div>
+    <div id="trendLine" class="chart"></div>
+  </div>
+</div>
+
+<!-- 异常关注 -->
+<div class="card glass" style="margin-bottom:16px">
+  <div class="card-head"><span class="card-title">需关注事项</span><span class="card-tag">5 项</span></div>
+  <ul class="alert-list">
+    <li class="alert-item"><span class="alert-dot dot-red"></span><div><div>Q1需求评审文档定稿 — 逾期5天</div><div class="alert-dept">产品部 · 张三</div></div></li>
+    <li class="alert-item"><span class="alert-dot dot-red"></span><div><div>支付接口对接 — 阻塞中，等待第三方</div><div class="alert-dept">技术部 · 赵六</div></div></li>
+    <li class="alert-item"><span class="alert-dot dot-amber"></span><div><div>品牌VI升级交付 — 逾期7天</div><div class="alert-dept">设计部 · 王五</div></div></li>
+    <li class="alert-item"><span class="alert-dot dot-amber"></span><div><div>3月活动方案确认 — 催办中</div><div class="alert-dept">运营部 · 李四</div></div></li>
+    <li class="alert-item"><span class="alert-dot dot-amber"></span><div><div>竞品分析报告 — 催办中</div><div class="alert-dept">市场部 · 孙七</div></div></li>
+  </ul>
+</div>
+
+<div class="footer">ClawdBot · 智能工作总结系统 · 18:00 自动生成</div>
+
+<script>
+const colors = {
+  blue: '#3b82f6', green: '#10b981', amber: '#f59e0b',
+  red: '#ef4444', purple: '#8b5cf6', cyan: '#06b6d4'
+};
+const darkAxis = {
+  axisLine: { lineStyle: { color: 'rgba(148,163,184,0.1)' }},
+  splitLine: { lineStyle: { color: 'rgba(148,163,184,0.05)' }},
+  axisLabel: { color: '#64748b', fontSize: 12 }
+};
+
+// 状态饼图
+echarts.init(document.getElementById('statusPie')).setOption({
+  tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+  series: [{
+    type: 'pie', radius: ['45%', '70%'], center: ['50%', '50%'],
+    label: { show: true, color: '#94a3b8', fontSize: 11, formatter: '{b}\n{d}%' },
+    labelLine: { lineStyle: { color: 'rgba(148,163,184,0.3)' }},
+    itemStyle: { borderColor: '#151832', borderWidth: 3 },
+    data: [
+      { value: 15, name: '已完成', itemStyle: { color: colors.green }},
+      { value: 24, name: '推进中', itemStyle: { color: colors.blue }},
+      { value: 3, name: '催办中', itemStyle: { color: colors.amber }},
+      { value: 3, name: '逾期', itemStyle: { color: colors.red }},
+      { value: 2, name: '阻塞', itemStyle: { color: '#dc2626' }},
+      { value: 1, name: '暂缓', itemStyle: { color: colors.purple }}
+    ]
+  }]
+});
+
+// 趋势折线
+echarts.init(document.getElementById('trendLine')).setOption({
+  tooltip: { trigger: 'axis' },
+  legend: { data: ['完成','新增'], right: 0, top: 0, textStyle: { color: '#64748b', fontSize: 11 }},
+  grid: { left: 35, right: 10, top: 30, bottom: 25 },
+  xAxis: { type: 'category', data: ['周一','周二','周三','周四','周五'], ...darkAxis, boundaryGap: false },
+  yAxis: { type: 'value', ...darkAxis },
+  series: [
+    { name: '完成', type: 'line', smooth: true, data: [2,3,4,null,null],
+      lineStyle: { color: colors.green, width: 2.5 },
+      areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(16,185,129,0.2)'},{offset:1,color:'transparent'}]) },
+      itemStyle: { color: colors.green }
+    },
+    { name: '新增', type: 'line', smooth: true, data: [1,2,1,null,null],
+      lineStyle: { color: colors.cyan, width: 2.5, type: 'dashed' },
+      areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(6,182,212,0.12)'},{offset:1,color:'transparent'}]) },
+      itemStyle: { color: colors.cyan }
+    }
+  ]
+});
+</script>
+</body>
+</html>
