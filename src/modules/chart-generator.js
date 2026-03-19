@@ -400,6 +400,153 @@ class ChartGenerator {
   }
 
   /**
+   * ⭐ 综合总览图（一张图看全局）
+   * 横向分组柱状图：每部门显示 已完成 / 待办 / 异常
+   * 顶部标注日期+整体达成率
+   */
+  async overviewChart(taskData) {
+    const today = dayjs();
+    const dateStr = today.format('M月D日');
+    const weekday = ['周日','周一','周二','周三','周四','周五','周六'][today.day()];
+    const { departments, summary } = taskData;
+    const totalRate = summary.totalTasks > 0 ? Math.round((summary.completedTasks / summary.totalTasks) * 100) : 0;
+
+    const depts = departments
+      .filter(d => ((d.pendingCount || 0) + (d.completedCount || 0)) > 0)
+      .sort((a, b) => {
+        const ra = this._rate(a), rb = this._rate(b);
+        return ra - rb; // 差的在上面（先看到问题）
+      })
+      .slice(0, 12);
+
+    const labels = depts.map(d => this._shortName(d.department));
+    const completed = depts.map(d => d.completedCount || 0);
+    const pending = depts.map(d => {
+      const p = d.pendingCount || 0;
+      const blocked = (d.tasks || []).filter(t => !t.isCompleted && (t.statusKey === 'blocked' || (t.deadline && dayjs(t.deadline).isBefore(today, 'day')))).length;
+      return Math.max(0, p - blocked);
+    });
+    const abnormal = depts.map(d => {
+      return (d.tasks || []).filter(t => !t.isCompleted && (t.statusKey === 'blocked' || (t.deadline && dayjs(t.deadline).isBefore(today, 'day')))).length;
+    });
+    const rates = depts.map(d => this._rate(d));
+
+    // 动态高度：根据部门数适配，少于4个部门也不会太空
+    const chartH = Math.min(700, Math.max(300, depts.length * 50 + 120));
+
+    const config = {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: '已完成',
+            data: completed,
+            backgroundColor: '#5BBD72cc',
+            borderWidth: 0,
+            borderRadius: 3,
+            barPercentage: 0.6,
+            categoryPercentage: 0.75,
+          },
+          {
+            label: '进行中',
+            data: pending,
+            backgroundColor: '#5B8DEFcc',
+            borderWidth: 0,
+            borderRadius: 3,
+            barPercentage: 0.6,
+            categoryPercentage: 0.75,
+          },
+          {
+            label: '异常（逾期/阻塞）',
+            data: abnormal,
+            backgroundColor: '#E8676Bcc',
+            borderWidth: 0,
+            borderRadius: 3,
+            barPercentage: 0.6,
+            categoryPercentage: 0.75,
+          },
+        ],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: false,
+        layout: { padding: { top: 8, right: 60, bottom: 16, left: 8 } },
+        plugins: {
+          title: {
+            display: true,
+            text: `${dateStr} ${weekday}  工作总览  |  达成率 ${totalRate}%  |  共${summary.totalTasks}项  完成${summary.completedTasks}  待办${summary.totalTasks - summary.completedTasks}`,
+            font: { size: 16, weight: '600', family: '"PingFang SC", "SF Pro Display", sans-serif' },
+            color: LIGHT.titleColor,
+            padding: { bottom: 20, top: 8 },
+          },
+          legend: {
+            position: 'top',
+            align: 'center',
+            labels: {
+              color: LIGHT.legendColor,
+              font: { size: 12, family: '"PingFang SC", "SF Pro Text", sans-serif' },
+              usePointStyle: true,
+              pointStyle: 'rectRounded',
+              padding: 18,
+            },
+          },
+          // 在柱条右侧显示达成率
+          datalabels: false,
+        },
+        scales: {
+          x: {
+            stacked: true,
+            grid: { color: LIGHT.grid, drawBorder: false },
+            ticks: { color: LIGHT.subtext, font: { size: 11 }, stepSize: 1 },
+            border: { display: false },
+            title: { display: true, text: '事项数', color: LIGHT.subtext, font: { size: 11 } },
+          },
+          y: {
+            stacked: true,
+            grid: { display: false },
+            ticks: {
+              color: LIGHT.labelColor,
+              font: { size: 13, weight: '500', family: '"PingFang SC", sans-serif' },
+              callback: function(value, index) {
+                return labels[index] + '  ' + rates[index] + '%';
+              },
+            },
+            border: { display: false },
+          },
+        },
+      },
+      plugins: [{
+        id: 'rateLabels',
+        afterDraw: (chart) => {
+          const ctx = chart.ctx;
+          const meta = chart.getDatasetMeta(2); // 最后一个dataset
+          meta.data.forEach((bar, i) => {
+            const total = completed[i] + pending[i] + abnormal[i];
+            if (total === 0) return;
+            ctx.save();
+            ctx.fillStyle = LIGHT.subtext;
+            ctx.font = '12px "PingFang SC", sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            const x = bar.x + 8;
+            const y = bar.y;
+            ctx.fillText(`${completed[i]}/${total}`, x, y);
+            ctx.restore();
+          });
+        },
+      }],
+    };
+
+    return this._render(config, chartH);
+  }
+
+  _rate(d) {
+    const total = (d.pendingCount || 0) + (d.completedCount || 0);
+    return total > 0 ? Math.round(((d.completedCount || 0) / total) * 100) : 0;
+  }
+
+  /**
    * 一键生成所有图表并上传
    */
   async generateAll(taskData) {

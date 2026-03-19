@@ -22,6 +22,7 @@ const axios = require('axios');
 
 const messageTemplates = require('../src/modules/message-templates');
 const taskParser = require('../src/modules/task-parser');
+const chartGenerator = require('../src/modules/chart-generator');
 const dashboardHtml = require('../src/modules/dashboard-html');
 const ossUploader = require('../src/modules/oss-uploader');
 const dingtalkClient = require('../src/modules/dingtalk-client');
@@ -140,28 +141,51 @@ async function uploadDashboard(taskData) {
 
 /**
  * --card: 每日总览 → 群
- * 一条ActionCard消息：紧凑总览 + "查看明细"按钮
+ * 一张总览图（PNG）+ 简短文字 + 看板链接按钮
  */
 async function cmdCard(taskData, dryRun) {
   console.log('\n📊 每日总览 → 群');
   console.log('─'.repeat(40));
 
-  // 生成看板并上传
+  // 1. 生成总览图
+  console.log('  生成总览图...');
+  const chartBuf = await chartGenerator.overviewChart(taskData);
+  let chartUrl = '';
+  if (chartBuf) {
+    // 保存本地
+    const chartsDir = path.join(__dirname, '..', 'data', 'charts');
+    if (!fs.existsSync(chartsDir)) fs.mkdirSync(chartsDir, { recursive: true });
+    fs.writeFileSync(path.join(chartsDir, 'overview.png'), chartBuf);
+    console.log('  本地: data/charts/overview.png');
+    // 上传OSS
+    try {
+      chartUrl = await chartGenerator.uploadToOss(chartBuf, 'overview');
+      if (chartUrl) console.log(`  图片: ${chartUrl}`);
+    } catch (e) { console.log(`  OSS上传失败: ${e.message}`); }
+  }
+
+  // 2. 生成看板
   console.log('  生成看板...');
   const dashUrl = await uploadDashboard(taskData);
 
-  // 生成紧凑总览消息
+  // 3. 构建消息：图片 + 简短文字
   const { title, text } = messageTemplates.generateDailySummary(taskData, dashUrl);
-  console.log(text);
+  let msgText = text;
+  if (chartUrl) {
+    // 在开头插入图片
+    msgText = `![总览](${chartUrl})\n\n${text}`;
+  }
+
+  console.log('─'.repeat(40));
+  console.log(msgText);
   console.log('─'.repeat(40));
 
   if (dryRun) return true;
 
-  // 有看板链接 → ActionCard（带按钮）；无链接 → 普通Markdown
   if (dashUrl) {
-    return sendActionCard(title, text, '📋 查看明细看板', dashUrl);
+    return sendActionCard(title, msgText, '📋 查看明细 · 可调整状态', dashUrl);
   }
-  return sendToGroup(title, text);
+  return sendToGroup(title, msgText);
 }
 
 /**
