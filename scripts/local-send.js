@@ -414,8 +414,10 @@ async function sendInteractiveCard(taskData, cardType, dryRun) {
   if (result.success) {
     console.log('  ✓ 互动卡片发送成功!');
     console.log(`  outTrackId: ${outTrackId}`);
+    if (result.result) console.log(`  返回数据: ${JSON.stringify(result.result)}`);
   } else {
     console.error(`  ✗ 互动卡片发送失败: ${result.error}`);
+    if (result.detail) console.error(`  详细错误: ${JSON.stringify(result.detail, null, 2)}`);
   }
   return result.success;
 }
