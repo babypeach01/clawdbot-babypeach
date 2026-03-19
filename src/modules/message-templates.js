@@ -325,16 +325,13 @@ class MessageTemplates {
       .sort((a, b) => (b.pendingCount || 0) - (a.pendingCount || 0));
 
     const chartData = {
-      type: 'bar',
+      type: 'histogram',
       data: deptSorted.slice(0, 8).map(d => ({
         x: this._shortDept(d.department),
         y: d.pendingCount || 0,
-        type: '待办',
+        type: this._shortDept(d.department),
       })),
-      config: {
-        color: '#1677FF',
-        padding: [20, 20, 30, 50],
-      },
+      config: {},
     };
 
     // 构建异常预警文本
@@ -367,11 +364,10 @@ class MessageTemplates {
         }
       }
       chartData.data = [
-        { x: '逾期', y: overdueCount, type: '异常' },
-        { x: '阻塞', y: blockedCount, type: '异常' },
-        { x: '催办中', y: urgentCount, type: '异常' },
+        { x: '逾期', y: overdueCount, type: '逾期' },
+        { x: '阻塞', y: blockedCount, type: '阻塞' },
+        { x: '催办中', y: urgentCount, type: '催办中' },
       ];
-      chartData.config.color = '#F5222D';
     } else if (type === 'weekly') {
       const weekStart = today.subtract(4, 'day').format('M/D');
       title = `📅 ${weekStart}-${dateStr} 本周回顾`;
@@ -379,9 +375,8 @@ class MessageTemplates {
       chartData.data = deptSorted.slice(0, 8).map(d => {
         const total = (d.pendingCount || 0) + (d.completedCount || 0);
         const rate = total > 0 ? Math.round(((d.completedCount || 0) / total) * 100) : 0;
-        return { x: this._shortDept(d.department), y: rate, type: '完成率' };
+        return { x: this._shortDept(d.department), y: rate, type: this._shortDept(d.department) };
       });
-      chartData.config.color = '#52C41A';
     }
 
     return {
