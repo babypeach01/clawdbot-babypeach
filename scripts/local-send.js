@@ -139,66 +139,29 @@ async function uploadDashboard(taskData) {
 }
 
 /**
- * --card: 宏观总结卡片 → 群（互动卡片 + 看板链接）
+ * --card: 每日总览 → 群
+ * 一条ActionCard消息：紧凑总览 + "查看明细"按钮
  */
 async function cmdCard(taskData, dryRun) {
-  console.log('\n📊 宏观总结卡片 → 群');
+  console.log('\n📊 每日总览 → 群');
   console.log('─'.repeat(40));
 
-  // 1. 生成并上传交互式看板
-  console.log('  生成交互式看板...');
+  // 生成看板并上传
+  console.log('  生成看板...');
   const dashUrl = await uploadDashboard(taskData);
 
-  const cardTemplateId = config.dingtalk.cardTemplateId;
-  if (!cardTemplateId) {
-    // 无卡片模板 → 用ActionCard替代（带看板链接按钮）
-    console.log('  未配置卡片模板，使用ActionCard');
-    const cardData = messageTemplates.generateCardData(taskData);
-    let text = `## ${cardData.title}\n\n`;
-    text += `> 达成率 **${cardData.completionRate}** ┃ 待办 **${cardData.pendingCount}** ┃ 已完成 **${cardData.completedCount}**\n\n`;
-    text += `${cardData.alerts}\n\n`;
-    text += `---\n\n*点击下方按钮查看详细看板，可按部门下钻查看明细*`;
+  // 生成紧凑总览消息
+  const { title, text } = messageTemplates.generateDailySummary(taskData, dashUrl);
+  console.log(text);
+  console.log('─'.repeat(40));
 
-    if (dryRun) { console.log(text); return true; }
+  if (dryRun) return true;
 
-    if (dashUrl) {
-      return sendActionCard(cardData.title, text, '📊 查看交互式看板', dashUrl);
-    }
-    return sendToGroup(cardData.title, text);
+  // 有看板链接 → ActionCard（带按钮）；无链接 → 普通Markdown
+  if (dashUrl) {
+    return sendActionCard(title, text, '📋 查看明细看板', dashUrl);
   }
-
-  // 有卡片模板
-  const cardData = messageTemplates.generateCardData(taskData);
-  const cardParamMap = {
-    title: cardData.title,
-    completionRate: cardData.completionRate,
-    pendingCount: cardData.pendingCount,
-    completedCount: cardData.completedCount,
-    chartData: JSON.stringify(cardData.chartData),
-    alerts: cardData.alerts,
-  };
-  if (dashUrl) cardParamMap.dashboardUrl = dashUrl;
-
-  console.log(`  标题: ${cardData.title}`);
-  console.log(`  完成率: ${cardData.completionRate} | 待办: ${cardData.pendingCount} | 已完成: ${cardData.completedCount}`);
-  console.log(`  图表: ${cardData.chartData.data.length} 个部门`);
-  if (dashUrl) console.log(`  看板: ${dashUrl}`);
-
-  if (dryRun) {
-    console.log('\n  (预览模式)');
-    return true;
-  }
-
-  const outTrackId = `clawdbot-card-${Date.now()}`;
-  const options = {};
-  if (config.dingtalk.openConversationId) {
-    options.openConversationId = config.dingtalk.openConversationId;
-  }
-
-  const result = await dingtalkClient.sendInteractiveCard(cardTemplateId, outTrackId, cardParamMap, options);
-  if (result.success) console.log('  ✓ 卡片发送成功');
-  else console.error(`  ✗ 失败: ${result.error}`);
-  return result.success;
+  return sendToGroup(title, text);
 }
 
 /**

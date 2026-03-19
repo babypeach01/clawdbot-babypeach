@@ -52,32 +52,13 @@ async function refreshData() {
  * 10:00 宏观总结卡片 → 群
  */
 async function sendMorningSummary() {
-  logger.info('📊 发送宏观总结卡片...');
+  logger.info('📊 发送每日总览...');
   const taskData = dataStore.loadLatestTasks();
   if (!taskData?.departments) { logger.warn('无数据，跳过'); return; }
 
-  const cardTemplateId = config.dingtalk.cardTemplateId;
-  if (!cardTemplateId) { logger.warn('未配置卡片模板ID'); return; }
-
-  const cardData = messageTemplates.generateCardData(taskData);
-  const cardParamMap = {
-    title: cardData.title,
-    completionRate: cardData.completionRate,
-    pendingCount: cardData.pendingCount,
-    completedCount: cardData.completedCount,
-    chartData: JSON.stringify(cardData.chartData),
-    alerts: cardData.alerts,
-  };
-
-  const outTrackId = `clawdbot-morning-${Date.now()}`;
-  const options = {};
-  if (config.dingtalk.openConversationId) {
-    options.openConversationId = config.dingtalk.openConversationId;
-  }
-
-  const result = await dingtalk.sendInteractiveCard(cardTemplateId, outTrackId, cardParamMap, options);
-  if (result.success) logger.info('✓ 宏观总结卡片已发送');
-  else logger.error(`卡片发送失败: ${result.error}`);
+  const { title, text } = messageTemplates.generateDailySummary(taskData);
+  await dingtalk.sendRobotMessage(title, text);
+  logger.info('✓ 每日总览已发送');
 }
 
 /**

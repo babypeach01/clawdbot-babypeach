@@ -1,22 +1,70 @@
 /**
- * 消息模板引擎（v7 - 总结汇报导向）
+ * 消息模板引擎（v8 - 极简总览）
  *
- * 工作流：
- *   1. 自动 → 群：宏观总结卡片（互动卡片，1-2张原生图表）
- *   2. 自动 → 管理者私信：重点事项预警（逾期/阻塞/停滞）
- *   3. 手动 → 群：管理者审核后的正式闭环报送
- *   4. 辅助 → 催办@相关人员，收集回复
+ * 核心原则：一条消息看完全局，不啰嗦
  */
 const dayjs = require('dayjs');
 const logger = require('../utils/logger');
 
 class MessageTemplates {
 
-  // ════════════════════════════════════════════
-  //  1. 宏观总结卡片（互动卡片，发到群）
-  //     老板看大盘：KPI + 部门待办分布图
-  // ════════════════════════════════════════════
+  /**
+   * 每日总览（钉钉Markdown，一条消息看完）
+   * 格式：大标题 + 一行总数据 + 紧凑部门列表 + 异常摘要
+   */
+  generateDailySummary(taskData, dashboardUrl = '') {
+    const today = dayjs();
+    const dateStr = today.format('M/D');
+    const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.day()];
+    const { summary, departments } = taskData;
+    const totalPending = summary.totalTasks - summary.completedTasks;
+    const rate = summary.totalTasks > 0 ? Math.round((summary.completedTasks / summary.totalTasks) * 100) : 0;
 
+    let msg = `## 📊 ${dateStr} ${weekday} 工作总览\n\n`;
+    msg += `> 达成率 **${rate}%** ┃ 共 **${summary.totalTasks}** 项 ┃ 完成 **${summary.completedTasks}** ┃ 待办 **${totalPending}**\n\n`;
+    msg += `---\n\n`;
+
+    // 紧凑部门列表：一行一个部门，进度条 + 数字
+    const depts = [...departments]
+      .filter(d => (d.pendingCount || 0) + (d.completedCount || 0) > 0)
+      .sort((a, b) => {
+        const ra = this._deptRate(a);
+        const rb = this._deptRate(b);
+        return ra - rb; // 差的排前面
+      });
+
+    for (const d of depts) {
+      const done = d.completedCount || 0;
+      const pend = d.pendingCount || 0;
+      const total = done + pend;
+      const r = this._deptRate(d);
+      const bar = this._progressBar(r);
+      const icon = r >= 60 ? '🟢' : r >= 30 ? '🟡' : '🔴';
+      msg += `> ${icon} **${this._shortDept(d.department)}** ${bar} ${r}%（${done}/${total}）\n\n`;
+    }
+
+    // 异常摘要（一行带过）
+    const alerts = this._collectAlerts(departments, today);
+    if (alerts.length > 0) {
+      const blocked = alerts.filter(a => a.icon === '🚫').length;
+      const overdue = alerts.filter(a => a.icon === '⏰').length;
+      const parts = [];
+      if (blocked) parts.push(`${blocked}阻塞`);
+      if (overdue) parts.push(`${overdue}逾期`);
+      msg += `---\n\n> ⚠️ **${alerts.length}项异常**（${parts.join(' ')}）\n\n`;
+    }
+
+    if (dashboardUrl) {
+      msg += `---\n\n[📋 查看明细看板](${dashboardUrl})\n\n`;
+    }
+
+    msg += `*${today.format('HH:mm')} 自动生成*`;
+    return { title: `${dateStr} 工作总览`, text: msg };
+  }
+
+  /**
+   * 互动卡片数据（钉钉原生卡片）
+   */
   generateCardData(taskData) {
     const today = dayjs();
     const dateStr = today.format('M/D');
@@ -26,7 +74,6 @@ class MessageTemplates {
     const completionRate = summary.totalTasks > 0
       ? Math.round((summary.completedTasks / summary.totalTasks) * 100) : 0;
 
-    // 部门待办数量柱状图
     const deptSorted = [...departments]
       .filter(d => (d.pendingCount || 0) + (d.completedCount || 0) > 0)
       .sort((a, b) => (b.pendingCount || 0) - (a.pendingCount || 0));
@@ -41,11 +88,10 @@ class MessageTemplates {
       config: {},
     };
 
-    // 底部简短摘要（不放详细异常，异常走私信）
     const alertCount = this._collectAlerts(departments, today).length;
     const alertsText = alertCount > 0
-      ? `⚠️ ${alertCount}项异常待处理（逾期/阻塞）`
-      : '✅ 各部门运转正常';
+      ? `⚠️ ${alertCount}项异常`
+      : '✅ 运转正常';
 
     return {
       title: `📊 ${dateStr} ${weekday} 工作总览`,
@@ -57,12 +103,9 @@ class MessageTemplates {
     };
   }
 
-  // ════════════════════════════════════════════
-  //  2. 重点事项预警（私信给管理者）
-  //     逾期/阻塞/停滞，按严重程度排序
-  //     管理者收到后人工核查、决定处理方式
-  // ════════════════════════════════════════════
-
+  /**
+   * 重点事项预警（私信给管理者）
+   */
   generatePrivateAlert(taskData) {
     const today = dayjs();
     const dateStr = today.format('M/D');
@@ -72,9 +115,8 @@ class MessageTemplates {
     if (alerts.length === 0) return null;
 
     let msg = `## ⚠️ ${dateStr} 重点事项预警\n\n`;
-    msg += `> 以下 **${alerts.length}** 项需要您核查确认\n\n`;
+    msg += `> 以下 **${alerts.length}** 项需要您核查\n\n`;
 
-    // 按类型分组
     const blocked = alerts.filter(a => a.icon === '🚫');
     const overdue = alerts.filter(a => a.icon === '⏰');
     const pending = alerts.filter(a => a.icon === '📞');
@@ -82,92 +124,70 @@ class MessageTemplates {
     if (blocked.length > 0) {
       msg += `### 🚫 阻塞 ${blocked.length}项\n\n`;
       for (const a of blocked) {
-        msg += `> **${a.title}**\n> ${a.dept} → ${a.owner}\n\n`;
+        msg += `> **${a.title}** → ${a.owner}（${a.dept}）\n\n`;
       }
     }
-
     if (overdue.length > 0) {
       msg += `### ⏰ 逾期 ${overdue.length}项\n\n`;
       for (const a of overdue) {
-        msg += `> **${a.title}**（${a.type}）\n> ${a.dept} → ${a.owner}${a.extra ? ' · ' + a.extra : ''}\n\n`;
+        msg += `> **${a.title}**（${a.type}）→ ${a.owner}（${a.dept}）\n\n`;
       }
     }
-
     if (pending.length > 0) {
       msg += `### 📞 催办中 ${pending.length}项\n\n`;
-      for (const a of pending.slice(0, 10)) {
+      for (const a of pending.slice(0, 5)) {
         msg += `> **${a.title}** → ${a.owner}（${a.dept}）\n\n`;
       }
-      if (pending.length > 10) msg += `> ...还有${pending.length - 10}项\n\n`;
     }
 
-    msg += `---\n\n`;
-    msg += `📌 **操作提示：**\n\n`;
-    msg += `> 回复 \`催办 部门名\` → 机器人@该部门负责人催办\n\n`;
-    msg += `> 回复 \`推送\` → 将今日总结发送到群\n\n`;
-    msg += `*${today.format('HH:mm')} 自动检测*`;
-
+    msg += `---\n\n*${today.format('HH:mm')} 自动检测*`;
     return { title: `${dateStr} 重点事项预警`, text: msg };
   }
 
-  // ════════════════════════════════════════════
-  //  3. 正式闭环报送（管理者手动触发 → 发到群）
-  //     经过人工审核确认的当日总结
-  // ════════════════════════════════════════════
-
+  /**
+   * 正式闭环报送（管理者手动触发 → 群）
+   */
   generateFormalReport(taskData, managerNotes = '') {
     const today = dayjs();
     const dateStr = today.format('M/D');
     const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.day()];
     const { summary, departments } = taskData;
     const totalPending = summary.totalTasks - summary.completedTasks;
-    const completionRate = summary.totalTasks > 0
-      ? Math.round((summary.completedTasks / summary.totalTasks) * 100) : 0;
+    const rate = summary.totalTasks > 0 ? Math.round((summary.completedTasks / summary.totalTasks) * 100) : 0;
 
-    let msg = `## 📋 ${dateStr} ${weekday} · 当日工作总结\n\n`;
+    let msg = `## 📋 ${dateStr} ${weekday} · 工作总结\n\n`;
+    msg += `> 达成率 **${rate}%** ┃ 总 **${summary.totalTasks}** ┃ 完成 **${summary.completedTasks}** ┃ 待办 **${totalPending}**\n\n`;
+    msg += `---\n\n`;
 
-    // 全局数据
-    msg += `> 完成率 **${completionRate}%** ┃ 总事项 **${summary.totalTasks}** ┃ 待办 **${totalPending}** ┃ 已完成 **${summary.completedTasks}**\n\n`;
-
-    // 部门进展
-    const deptSorted = [...departments]
+    const depts = [...departments]
       .filter(d => (d.pendingCount || 0) + (d.completedCount || 0) > 0)
-      .sort((a, b) => (b.pendingCount || 0) - (a.pendingCount || 0));
+      .sort((a, b) => this._deptRate(a) - this._deptRate(b));
 
-    msg += `---\n\n### 📊 各部门进展\n\n`;
-    for (const dept of deptSorted) {
-      const pending = dept.pendingCount || 0;
-      const completed = dept.completedCount || 0;
-      const total = pending + completed;
-      const rate = total > 0 ? Math.round((completed / total) * 100) : 0;
-      const icon = rate >= 50 ? '🟢' : rate >= 20 ? '🟡' : '🔴';
-      msg += `> ${icon} **${this._shortDept(dept.department)}** ${rate}% ┃ ${pending}待办 ${completed}完成\n\n`;
+    for (const d of depts) {
+      const done = d.completedCount || 0;
+      const pend = d.pendingCount || 0;
+      const r = this._deptRate(d);
+      const bar = this._progressBar(r);
+      const icon = r >= 60 ? '🟢' : r >= 30 ? '🟡' : '🔴';
+      msg += `> ${icon} **${this._shortDept(d.department)}** ${bar} ${r}%（${done}/${done + pend}）\n\n`;
     }
 
-    // 异常概况
     const alerts = this._collectAlerts(departments, today);
     if (alerts.length > 0) {
-      msg += `---\n\n### ⚠️ 需关注事项（${alerts.length}项）\n\n`;
-      for (const a of alerts.slice(0, 8)) {
-        msg += `> ${a.icon} ${a.dept} · ${this._truncate(a.title, 18)} → ${a.owner}\n\n`;
-      }
-      if (alerts.length > 8) msg += `> ...还有${alerts.length - 8}项\n\n`;
+      msg += `---\n\n> ⚠️ ${alerts.length}项异常需关注\n\n`;
     }
 
-    // 管理者备注
     if (managerNotes) {
-      msg += `---\n\n### 💬 管理者备注\n\n`;
-      msg += `> ${managerNotes}\n\n`;
+      msg += `---\n\n> 💬 ${managerNotes}\n\n`;
     }
 
-    msg += `---\n\n*${today.format('HH:mm')} 发布*`;
+    msg += `*${today.format('HH:mm')} 发布*`;
     return { title: `${dateStr} 工作总结`, text: msg };
   }
 
-  // ════════════════════════════════════════════
-  //  4. 催办消息（@指定人员）
-  // ════════════════════════════════════════════
-
+  /**
+   * 催办（@指定部门）
+   */
   generateReminder(taskData, deptName) {
     const today = dayjs();
     const dept = taskData.departments.find(d =>
@@ -177,39 +197,27 @@ class MessageTemplates {
 
     const issues = (dept.tasks || []).filter(t => {
       if (t.isCompleted) return false;
-      if (t.statusKey === 'blocked') return true;
-      if (t.deadline && dayjs(t.deadline).isBefore(today, 'day')) return true;
-      return false;
+      return t.statusKey === 'blocked' || (t.deadline && dayjs(t.deadline).isBefore(today, 'day'));
     });
-
     if (issues.length === 0) return null;
 
-    let msg = `## 📌 事项跟进提醒\n\n`;
-    msg += `**${this._shortDept(dept.department)}** 有 ${issues.length} 项待处理：\n\n`;
-
+    let msg = `## 📌 ${this._shortDept(dept.department)} · ${issues.length}项待跟进\n\n`;
     for (const t of issues.slice(0, 5)) {
       const owner = t.owner || dept.owner || '';
       if (t.statusKey === 'blocked') {
-        msg += `> 🚫 **${this._truncate(t.title, 25)}** → ${owner}\n> 当前阻塞，请回复处理方案\n\n`;
+        msg += `> 🚫 **${this._truncate(t.title, 25)}** → ${owner}\n\n`;
       } else {
         const days = today.diff(dayjs(t.deadline), 'day');
-        msg += `> ⏰ **${this._truncate(t.title, 25)}** → ${owner}\n> 已逾期${days}天，请回复预计完成时间\n\n`;
+        msg += `> ⏰ **${this._truncate(t.title, 25)}** 逾期${days}天 → ${owner}\n\n`;
       }
     }
-
-    msg += `---\n\n请相关负责人回复处理进展 ⬇️`;
-
-    return {
-      title: `催办·${this._shortDept(dept.department)}`,
-      text: msg,
-      atUserIds: [dept.owner].filter(Boolean),
-    };
+    msg += `请回复处理进展 ⬇️`;
+    return { title: `催办·${this._shortDept(dept.department)}`, text: msg, atUserIds: [dept.owner].filter(Boolean) };
   }
 
-  // ════════════════════════════════════════════
-  //  周五回顾（替代当日总结）
-  // ════════════════════════════════════════════
-
+  /**
+   * 周五回顾
+   */
   generateWeeklyReview(taskData) {
     const today = dayjs();
     const weekStart = today.subtract(4, 'day').format('M/D');
@@ -217,50 +225,35 @@ class MessageTemplates {
     const { summary, departments } = taskData;
 
     let msg = `## 📅 本周回顾 ${weekStart}-${weekEnd}\n\n`;
+    msg += `> 总 **${summary.totalTasks}** ┃ 完成 **${summary.completedTasks}** ┃ 待办 **${summary.totalTasks - summary.completedTasks}**\n\n`;
+    msg += `---\n\n`;
 
-    msg += `> 总事项 **${summary.totalTasks}** ┃ 待办 **${summary.totalTasks - summary.completedTasks}** ┃ 已完成 **${summary.completedTasks}**\n\n`;
-
-    // 部门完成率排行
-    msg += `---\n\n### 🏆 部门完成率排行\n\n`;
-    const deptRates = departments
-      .map(d => {
-        const total = (d.pendingCount || 0) + (d.completedCount || 0);
-        const rate = total > 0 ? Math.round(((d.completedCount || 0) / total) * 100) : 0;
-        return { name: this._shortDept(d.department), rate, completed: d.completedCount || 0, pending: d.pendingCount || 0 };
-      })
-      .filter(d => d.completed + d.pending > 0)
+    const depts = departments
+      .map(d => ({ name: this._shortDept(d.department), rate: this._deptRate(d), done: d.completedCount || 0, total: (d.pendingCount || 0) + (d.completedCount || 0) }))
+      .filter(d => d.total > 0)
       .sort((a, b) => b.rate - a.rate);
 
-    for (let i = 0; i < deptRates.length; i++) {
-      const d = deptRates[i];
+    for (let i = 0; i < depts.length; i++) {
+      const d = depts[i];
       const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '　';
-      msg += `> ${medal} **${d.name}** **${d.rate}%** (${d.completed}/${d.completed + d.pending})\n\n`;
+      msg += `> ${medal} **${d.name}** ${this._progressBar(d.rate)} ${d.rate}%（${d.done}/${d.total}）\n\n`;
     }
 
-    // 待推动事项
-    const stuckItems = [];
-    for (const dept of departments) {
-      for (const t of dept.tasks) {
-        if (t.isCompleted) continue;
-        if (t.statusKey === 'blocked' || t.statusKey === 'pending_response') {
-          stuckItems.push({ title: this._truncate(t.title, 25), owner: t.owner || dept.owner });
-        }
-      }
-    }
-
-    if (stuckItems.length > 0) {
-      msg += `---\n\n### ⚠️ 待推动 ${stuckItems.length}项\n\n`;
-      for (const item of stuckItems.slice(0, 5)) {
-        msg += `> · ${item.title} → ${item.owner}\n\n`;
-      }
-      if (stuckItems.length > 5) msg += `> ...还有${stuckItems.length - 5}项\n\n`;
-    }
-
-    msg += `---\n\n*🤖 周报自动生成 ${today.format('HH:mm')}*`;
+    msg += `*${today.format('HH:mm')} 自动生成*`;
     return { title: `本周回顾 ${weekStart}-${weekEnd}`, text: msg };
   }
 
-  // ── 内部工具函数 ──
+  // ── 工具函数 ──
+
+  _progressBar(rate) {
+    const filled = Math.round(rate / 20); // 0-5
+    return '■'.repeat(filled) + '□'.repeat(5 - filled);
+  }
+
+  _deptRate(d) {
+    const total = (d.pendingCount || 0) + (d.completedCount || 0);
+    return total > 0 ? Math.round(((d.completedCount || 0) / total) * 100) : 0;
+  }
 
   _collectAlerts(departments, today) {
     const alerts = [];
@@ -269,36 +262,21 @@ class MessageTemplates {
         if (task.isCompleted) continue;
         const owner = task.owner || dept.owner || '';
         const deptName = this._shortDept(dept.department);
-
-        if (task.statusKey === 'blocked') {
-          alerts.push({ icon: '🚫', type: '阻塞', dept: deptName, title: this._truncate(task.title, 22), owner, extra: '', level: 3 });
-        }
+        if (task.statusKey === 'blocked')
+          alerts.push({ icon: '🚫', type: '阻塞', dept: deptName, title: this._truncate(task.title, 22), owner, level: 3 });
         if (task.deadline && dayjs(task.deadline).isBefore(today, 'day')) {
           const days = today.diff(dayjs(task.deadline), 'day');
-          alerts.push({ icon: '⏰', type: `逾期${days}天`, dept: deptName, title: this._truncate(task.title, 22), owner, extra: `截止${dayjs(task.deadline).format('M/D')}`, level: days > 5 ? 3 : 2 });
+          alerts.push({ icon: '⏰', type: `逾期${days}天`, dept: deptName, title: this._truncate(task.title, 22), owner, level: days > 5 ? 3 : 2 });
         }
-        if (task.statusKey === 'pending_response') {
-          alerts.push({ icon: '📞', type: '催办中', dept: deptName, title: this._truncate(task.title, 22), owner, extra: '', level: 1 });
-        }
+        if (task.statusKey === 'pending_response')
+          alerts.push({ icon: '📞', type: '催办中', dept: deptName, title: this._truncate(task.title, 22), owner, level: 1 });
       }
     }
     return alerts.sort((a, b) => b.level - a.level);
   }
 
-  _statusIcon(statusKey) {
-    const map = { in_progress: '🔵', pending_response: '🟡', blocked: '🚫', on_hold: '⏸', not_started: '⚪', completed: '✅' };
-    return map[statusKey] || '🔵';
-  }
-
-  _truncate(str, len) {
-    if (!str) return '';
-    return str.length > len ? str.slice(0, len) + '...' : str;
-  }
-
-  _shortDept(name) {
-    if (!name) return '未分类';
-    return name.replace(/\s+租车\/用车\/租机/, '').replace(/\s+/, '').slice(0, 6);
-  }
+  _truncate(str, len) { if (!str) return ''; return str.length > len ? str.slice(0, len) + '...' : str; }
+  _shortDept(name) { if (!name) return '未分类'; return name.replace(/\s+租车\/用车\/租机/, '').replace(/\s+/, '').slice(0, 8); }
 }
 
 module.exports = new MessageTemplates();
