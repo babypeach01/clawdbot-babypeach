@@ -12,7 +12,6 @@ const dingtalk = require('./modules/dingtalk-client');
 const taskParser = require('./modules/task-parser');
 const aiAnalyzer = require('./modules/ai-analyzer');
 const messageTemplates = require('./modules/message-templates');
-const chartGenerator = require('./modules/chart-generator');
 const dataStore = require('./modules/data-store');
 const logger = require('./utils/logger');
 
@@ -40,14 +39,7 @@ async function sendDailyReport() {
   const taskData = dataStore.loadLatestTasks();
   if (!taskData?.departments) { logger.warn('无数据，跳过'); return; }
 
-  // 生成表格图片
-  let chartUrl = '';
-  try {
-    const buf = await chartGenerator.dailySummaryTable(taskData);
-    if (buf) chartUrl = await chartGenerator.uploadToOss(buf, 'daily-table');
-  } catch (e) { logger.warn(`图表失败: ${e.message}`); }
-
-  const { title, text } = messageTemplates.generateDailyReport(taskData, chartUrl);
+  const { title, text } = messageTemplates.generateDailyReport(taskData);
   await dingtalk.sendRobotMessage(title, text);
   logger.info('当日小结已发送');
 }
