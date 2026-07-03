@@ -54,6 +54,7 @@ class TaskParser {
       summary: {
         totalTasks: 0,
         completedTasks: 0,
+        overdueTasks: 0,
         inProgressTasks: 0,
         pendingResponseTasks: 0,
         blockedTasks: 0,
@@ -108,6 +109,7 @@ class TaskParser {
         else if (key === 'blocked') result.summary.blockedTasks++;
         else if (key === 'on_hold') result.summary.onHoldTasks++;
         else if (key === 'not_started') result.summary.notStartedTasks++;
+        if (task.isOverdue) result.summary.overdueTasks++;
       }
     }
 
@@ -429,18 +431,23 @@ class TaskParser {
     const mentions = this._extractMentions(line);
     // 清除钉钉标记
     const cleanLine = this._cleanDingtalkMarks(line);
+    const legacyTask = this._parseLegacyPipeTaskLine(cleanLine, rawLine, mentions, subSection);
+    if (legacyTask) return legacyTask;
 
     const task = {
       title: '',
+      name: '',
       owners: mentions,              // 所有相关负责人
       owner: mentions[0] || '',      // 主要负责人
       status: '推进中',
       statusKey: 'in_progress',
       subSection: subSection,        // 所属子板块
       deadline: null,
+      progress: undefined,
       notes: '',
       isBlocked: false,
       isCompleted: false,
+      isOverdue: false,
       rawText: rawLine,
     };
 
@@ -492,8 +499,86 @@ class TaskParser {
     }
 
     task.isBlocked = task.statusKey === 'blocked';
+    task.isCompleted = task.statusKey === 'completed';
+    task.isOverdue = this._isDeadlineOverdue(task.deadline) && !task.isCompleted;
+    task.name = task.title;
 
     return task;
+  }
+
+  /**
+   * 兼容 README 和早期测试中的管道分隔格式：
+   * 任务名 | 截止:3/25 | 进度:60% | 备注
+   */
+  _parseLegacyPipeTaskLine(cleanLine, rawLine, mentions, subSection) {
+    if (!cleanLine.includes('|')) return null;
+
+    const parts = cleanLine.split('|').map(part => part.trim()).filter(Boolean);
+    if (parts.length < 2) return null;
+
+    const title = parts[0].replace(/[：:]\s*$/, '').trim();
+    const task = {
+      title,
+      name: title,
+      owners: mentions,
+      owner: mentions[0] || '',
+      status: '推进中',
+      statusKey: 'in_progress',
+      subSection,
+      deadline: null,
+      progress: undefined,
+      notes: '',
+      isBlocked: false,
+      isCompleted: false,
+      isOverdue: false,
+      rawText: rawLine,
+    };
+
+    const noteParts = [];
+    for (const part of parts.slice(1)) {
+      const deadlineMatch = part.match(/截止[：:]\s*(\d{1,2}[/.]\d{1,2})/);
+      if (deadlineMatch) {
+        task.deadline = deadlineMatch[1];
+        continue;
+      }
+
+      const progressMatch = part.match(/进度[：:]\s*(\d{1,3})\s*%?/);
+      if (progressMatch) {
+        task.progress = Math.min(100, Math.max(0, Number(progressMatch[1])));
+        continue;
+      }
+
+      noteParts.push(part);
+    }
+
+    task.notes = noteParts.join(' | ');
+
+    const statusSource = `${task.notes} ${task.progress === 100 ? '已完成' : ''}`;
+    const matched = this._matchStatus(statusSource);
+    if (matched && matched.key !== 'completed') {
+      task.status = matched.label;
+      task.statusKey = matched.key;
+    }
+
+    task.isBlocked = task.statusKey === 'blocked';
+    task.isCompleted = task.statusKey === 'completed' || task.progress === 100;
+    if (task.isCompleted) {
+      task.status = '已完成';
+      task.statusKey = 'completed';
+    }
+    task.isOverdue = this._isDeadlineOverdue(task.deadline) && !task.isCompleted;
+
+    return task;
+  }
+
+  _isDeadlineOverdue(deadline) {
+    if (!deadline) return false;
+
+    const match = String(deadline).match(/^(\d{1,2})[/.](\d{1,2})$/);
+    if (!match) return false;
+
+    const dueDate = dayjs(`${dayjs().year()}-${String(Number(match[1])).padStart(2, '0')}-${String(Number(match[2])).padStart(2, '0')}`);
+    return dueDate.isValid() && dueDate.isBefore(dayjs(), 'day');
   }
 
   /**
@@ -536,6 +621,14 @@ class TaskParser {
 
         if (!prevTask) {
           changes.push({ type: 'new_task', department: dept.department, task: task.title });
+        } else if (task.progress !== undefined && prevTask.progress !== undefined && task.progress !== prevTask.progress) {
+          changes.push({
+            type: 'progress_change',
+            department: dept.department,
+            task: task.title,
+            from: prevTask.progress,
+            to: task.progress,
+          });
         } else if (task.statusKey !== prevTask.statusKey) {
           changes.push({
             type: 'status_change',
